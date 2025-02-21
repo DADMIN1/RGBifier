@@ -1,0 +1,9 @@
+.vscode/
+.idea/
+.venv/
+notes/
+Testing_Env.py
+*.png
+*.jpg
+*.gif
+
