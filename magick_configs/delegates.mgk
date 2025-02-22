@@ -1,0 +1,7 @@
+<?xml version="1.0"?>
+<!--
+ Empty GraphicsMagick Delegate command file (to prevent any delegates from loading)
+ Use 'gm convert -list delegates' to verify how the contents of this file has been parsed.
+-->
+<delegatemap>
+</delegatemap>

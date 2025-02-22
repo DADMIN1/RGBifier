@@ -1,0 +1,60 @@
+<?xml version="1.0"?>
+<!-- GraphicsMagick logging config -->
+<!--
+  --------------------------------------
+  |   events [comma separated list]    |
+  --------------------------------------
+  all/none       Standalone options to toggle all other flags.
+  annotate       Text annotation events.
+  blob           File opening/closing/loading events.
+  cache          Pixel cache events.
+  coder          File format coder events.
+  configure      Configuration events (searching for .mgk files, etc.).
+  deprecate      Identify use of deprecated functions.
+  error          Error exception report events.
+  exception      Exception report events (warning and error).
+  locale         Locale events.
+  render         Rendering (drawing) events.
+  resource       Resource allocation events (memory, disk, etc.)
+  temporaryFile  Temporary file events (allocate, deallocate, etc.)
+  transform      Image processing events.
+  user           Custom user events (for modding - none are emitted by GraphicsMagick).
+  warning        Warning exception report events.
+  X11            X11 server events. 
+
+  ----------------------------------
+  |            outputs             |
+  ----------------------------------
+  none/disabled  Reporting disabled.
+  stdout/stderr  Log to stdout/stderr in "human readable" format
+  xmlfile        Log to a file in an XML format
+  txtfile        Log to a file in a text format
+  win32debug     Windows, Output events to the application/system debugger.
+  win32eventlog  Windows, Output events to the Application event log.
+  
+  only a single output can be specified. any outputs listed after the first are ignored.
+-->
+
+<magicklog>
+  <!-- <log events="configure,resource,render,temporaryFile,transform,warning,error,exception" /> -->
+  <log events="all" />  <!-- environment-variable 'MAGICK_DEBUG' overrides this value -->
+  <log output="stderr" />
+  <log filename="/tmp/rgb_cache/magicklogs/magickrgb_%d.log" />
+  <!-- filename is relative to CWD. if the filename contains contains a directory,
+  that directory must already exist (won't be created, logging silently fails) -->
+  
+  <!-- note: graphicsmagick actually just overwrites the first log every time; it doesn't auto-increment.
+       the only time multiple logfiles are ever written is when the entry-limit (below) is surpassed. -->
+  <log generations="9" /> <!-- number of logs to keep before cycling back to zero. -->
+  <log limit="9999" /> <!-- Maximum number of logging events before creating a new log file. -->
+  
+  <!-- (%t/%r):time/relative, %d:domain, %f:function, %e:event -->
+  <log format="[%t][%d::%f]: %e" />
+  <!-- 
+    when log-output is to a 'txtfile', you need to add a newline to the format. otherwise all text is on one line
+    when output is 'stdout/stderr', you should remove that newline, because it creates empty lines. Very annoying.
+    this setting has no effect on the output 'xmlfile'.
+    <log format="[%t][%d::%f]: %e" />
+    <log format="[%t][%d::%f]: %e\n" />
+  -->
+</magicklog>
