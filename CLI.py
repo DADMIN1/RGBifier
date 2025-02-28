@@ -1,6 +1,7 @@
 import pathlib
 import argparse
 import tempfile
+import subprocess
 import os
 
 from collections import Counter
@@ -65,7 +66,7 @@ def SetupENV() -> dict:
     env_defaults = {
         # resources
            "DISK": "1GB",
-          "FILES": 4096, # ulimit reports 1024 as soft-limit; should probably be increased (ulimit -n 4096).
+          "FILES":  4096,  # GraphicsMagick will automatically increase soft-ulimit if necessary (ulimit -S -n)
             "MAP": "64GB", # normally 2x Memory-limit, for some reason
          "MEMORY": "64GB",
          "PIXELS": None, # GM-only?
@@ -152,63 +153,9 @@ def SetupENV() -> dict:
 
 
 
-# GraphicsMagick does not provide any mechanism for specifying a relative-path for logfile, except for subdirectories under CWD.
-# variable-expansion / substitution does not appear to be possible. Changing the path at runtime does not seem (reasonably) possible.
-# If the path contains a directory, that directory must already exist, otherwise the logfile will simply not be written (silent failure; no warnings, of course)
-# also, the mechanisms for writing numbered logfiles are only triggered by the event-limit (see log.mgk);
-# otherwise, GraphicsMagick just overwrites the same logfile on every single run.
-# TODO: come up with some workaround to switch paths between cache under tmpdir/cwd. maintain a symlink under cwd?
-def RotateMagickLogs(toplevel_cache_dir:pathlib.Path) -> pathlib.Path:
-    """
-    Create logging directory and rename existing logs.
-    Assumes that GraphicsMagick's logging-config (log.mgk) has 'filename' set to: "/tmp/rgb_cache/magicklogs/magickrgb_%d.log"
-    :param toplevel_cache_dir: the directory referred to by 'TOPLEVEL_CACHE_NAME'
-    :return: path to log-directory
-    """
-    assert(toplevel_cache_dir.name == TOPLEVEL_CACHE_NAME), "expected log-directory to be under toplevel cache"
-    assert(toplevel_cache_dir.is_relative_to("/tmp/")), "reminder to change path in 'log.mgk'";
-    
-    new_logdir = toplevel_cache_dir / "magicklogs"
-    if new_logdir.exists(): assert(new_logdir.is_dir()), "existing log-directory was not actually a directory!?"
-    else: new_logdir.mkdir(); print(f"created log-directory: '{new_logdir}'");
-    
-    stale_logs:list[pathlib.Path] = [F for F in new_logdir.glob("magickrgb_*.log.old") if (not F.is_dir())]
-    fresh_logs:list[pathlib.Path] = [F for F in new_logdir.glob("magickrgb_*.log") if ((F not in stale_logs) and (not F.is_dir()))]
-    
-    def PrintLognames(name, loglist:list[pathlib.Path]):
-        if((length := len(loglist)) > 0): print(f"{name} ({str(length).zfill(2)}): [" + ", ".join([L.name for L in loglist]) + "]");
-    
-    if(len(fresh_logs) == 0): return new_logdir;
-    print(f"\nrotating logs under: '{new_logdir}'...")
-    PrintLognames("fresh", fresh_logs)
-    PrintLognames("stale", stale_logs)
-    
-    # TODO: delete stale logs?
-    for log in fresh_logs:
-        current_name = log.name; log_num = log.stem.removeprefix("magickrgb_")
-        if not (log_num.isdigit()): print(f"error parsing filename of log: ({log_num}); '{log}'"); continue;
-        while((new_path := new_logdir / f"magickrgb_{str(log_num).zfill(3)}.log.old").exists()): log_num = int(log_num)+1;
-        print(f"  rotating:  {current_name} -> {new_path.name}")
-        log.rename(new_path.absolute())
-    
-    # moving stale logs back to fresh filenames for testing/debug
-    # for log in stale_logs:
-    #     current_name = log.name; log_num = log.stem.removeprefix("magickrgb_")
-    #     for suffix in log.suffixes: log_num = log_num.removesuffix(suffix);
-    #     if not (log_num.isdigit()): print(f"error parsing filename of log: ({log_num}); '{log}'"); continue;
-    #     while((new_path := new_logdir / f"magickrgb_{str(log_num)[-1]}{str(log_num)[:-3:-1]}.log").exists()): log_num = int(log_num)+1;
-    #     print(f" unrotating: {current_name} -> {new_path.name}")
-    #     log.rename(new_path.absolute())
-    # PrintLognames("unmoved", [F for F in new_logdir.glob("magickrgb_*.log") if ((not (F in fresh_logs)) and (not F.is_dir()))])
-    
-    PrintLognames("moved", [F for F in new_logdir.glob("magickrgb_*.log.old") if ((not (F in stale_logs)) and (not F.is_dir()))])
-    print(f"{len(fresh_logs)} logs rotated [{len(stale_logs)+len(fresh_logs)} total]\n")
-    return new_logdir
-
-
-
-def CreateTempdir(autodelete=True, use_tmpfs=False) -> tuple[pathlib.Path|None,bool]:
+def CreateTempdir(checksum:str, autodelete=True, use_tmpfs=False) -> tuple[pathlib.Path|None,bool]:
     """ 
+    :param checksum: hash of input file; used as directory prefix
     :param autodelete: the new cache-directory will be deleted when program exits (has no effect if pre-existing cache is found)
     :param use_tmpfs: the new cache-directory will be located on tmpfs rather than under cwd. (attempts to mount tmpfs if mountpoint doesn't exist)
     :return: cache-directory's path and flag indicating that a pre-existing directory was found. (path is 'None' if tmpfs-mount failed)
@@ -231,9 +178,8 @@ def CreateTempdir(autodelete=True, use_tmpfs=False) -> tuple[pathlib.Path|None,b
         print("mounted tmpfs!")
         # TODO: should verify that new or pre-existing tempdir_toplevel is actually tmpfs
     
-    # TODO: generate tempdir prefix/suffix based on: input-file checksum and options.
-    tmpdir_prefix="pfix_"
-    tmpdir_suffix="_sfix"
+    tmpdir_prefix=f"{checksum}_"
+    tmpdir_suffix="_sfix" # TODO: generate tempdir suffix based on options.
     
     matching_dirs = [*tempdir_toplevel.glob(f"{tmpdir_prefix}*{tmpdir_suffix}/")]
     assert(len(matching_dirs) <= 1), "[ERROR]: multiple cache directory matches!!! (this is a bug)"
@@ -290,6 +236,55 @@ def CreateTempdir(autodelete=True, use_tmpfs=False) -> tuple[pathlib.Path|None,b
 
 
 
+# GraphicsMagick does not provide any mechanism for specifying a relative-path for logfile, except for subdirectories under CWD.
+# variable-expansion / substitution does not appear to be possible. Changing the path at runtime does not seem (reasonably) possible.
+# If the path contains a directory, that directory must already exist, otherwise the logfile will simply not be written (silent failure; no warnings, of course)
+# also, the mechanisms for writing numbered logfiles are only triggered by the event-limit (see log.mgk);
+# otherwise, GraphicsMagick just overwrites the same logfile on every single run.
+def RotateMagickLogs(toplevel_cache_dir:pathlib.Path) -> pathlib.Path:
+    """ Create logging directory and rename existing logs.
+    Assumes that GraphicsMagick's logging-config (log.mgk) has 'filename' set to: "/tmp/rgb_cache/magicklogs/magickrgb_%d.log"
+    The presence of 'magickrgb' prefix indicates that the log should be rotated, and the filename should end in a digit.
+    :param toplevel_cache_dir: the directory referred to by 'TOPLEVEL_CACHE_NAME'
+    :return: path to log-directory
+    """
+    assert(toplevel_cache_dir.name == TOPLEVEL_CACHE_NAME), "expected log-directory to be under toplevel cache"
+    assert(toplevel_cache_dir.is_relative_to("/tmp/")), "reminder to change path in 'log.mgk'";
+    # TODO: come up with some workaround to switch paths between cache under tmpdir/cwd. maintain a symlink under cwd?
+    
+    new_logdir = toplevel_cache_dir / "magicklogs"
+    if new_logdir.exists(): assert(new_logdir.is_dir()), "existing log-directory was not actually a directory!?"
+    else: new_logdir.mkdir(); print(f"created log-directory: '{new_logdir}'");
+    
+    stale_logs:list[pathlib.Path] = [F for F in new_logdir.glob("magickrgb_*.log.old") if (not F.is_dir())]
+    fresh_logs:list[pathlib.Path] = [F for F in new_logdir.glob("magickrgb_*.log") if ((F not in stale_logs) and (not F.is_dir()))]
+    
+    def PrintLognames(name, loglist:list[pathlib.Path]):
+        if((length := len(loglist)) > 0): print(f"{name} ({str(length).zfill(2)}): [" + ", ".join([L.name for L in loglist]) + "]");
+    
+    if(len(fresh_logs) == 0): return new_logdir;
+    print(f"\nrotating logs under: '{new_logdir}'...")
+    PrintLognames("fresh", fresh_logs)
+    PrintLognames("stale", stale_logs)
+    
+    # TODO: implement a limit for how many logs are kept, delete stale logs?
+    for log in fresh_logs:
+        current_name = log.name; log_num = log.stem.removeprefix("magickrgb_")
+        middle_name = "".join(C for C in log_num if C.isalpha())
+        if (len(middle_name) != 0): middle_name = f"_{middle_name}";
+        if not (log_num.isdigit()):
+            log_num = "".join(reversed([C for C in reversed(log_num) if C.isdigit()])) # this takes all digits in remaining text, not just trailing
+            if (len(log_num) == 0): log_num = '0';
+        if not (log_num.isdigit()): print(f"error parsing filename of log: ({log_num}); '{log}'"); continue;
+        while((new_path := new_logdir / f"magickrgb{middle_name}_{str(log_num).zfill(3)}.log.old").exists()): log_num = int(log_num)+1;
+        print(f"  rotating:  {current_name} -> {new_path.name}")
+        log.rename(new_path.absolute())
+    
+    PrintLognames("moved", [F for F in new_logdir.glob("magickrgb_*.log.old") if ((not (F in stale_logs)) and (not F.is_dir()))])
+    print(f"{len(fresh_logs)} logs rotated [{len(stale_logs)+len(fresh_logs)} total]\n")
+    return new_logdir
+
+
 def MakeImageSources(workdir:pathlib.Path, input_file:pathlib.Path) -> tuple[pathlib.Path, pathlib.Path]:
     """
     :param workdir: location of temp/cache directory
@@ -332,6 +327,42 @@ def MakeImageSources(workdir:pathlib.Path, input_file:pathlib.Path) -> tuple[pat
     return (baseimg_path, srcimg_path)
 
 
+def SubCommand(cmdline:list[str], logname:str = "main", log_dir:pathlib.Path|None = None):
+    """ Runs a command in subprocess and logs output - automatically creating or appending to the log-file.
+    :param cmdline: string or list of command-line args (including command itself)
+    :param logname: identifier used as base of filename
+    :param log_dir: path where logs will be written. Skip logging if 'None'
+    """
+    # TODO: get rid of 'log_dir' parameter (global or lambda)
+    #if (type(cmdline) is str): cmdline = [*cmdline.split()] # TODO: add string inputs. just use shell=True?
+    print('_'*120); print()
+    print(f'subcommand: "{cmdline}"')
+    if log_dir is None: print("[WARNING] output will not be logged ('log_dir' unspecified)"); return;
+    if (not log_dir.exists()): print(f"log_dir does not exist: '{log_dir}'"); return;
+    log_filepath = log_dir / f"magickrgb_{logname}.log"
+    print(f"logging to: '{log_filepath}'")
+    print('_'*120); print()
+    
+    # shell=True if cmdline is a single string
+    # cwd=... <- could be useful
+    # text=True: output is captured as string instead of bytes. implied by specifying 'encoding'
+    # check=True: raises 'CalledProcessError' on nonzero return-status
+    #completed = subprocess.run(cmdline, check=True, capture_output=True, encoding="utf-8")
+    #completed = subprocess.run(cmdline, check=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, encoding="utf-8")
+    #completed = subprocess.run(cmdline, check=True, stdout=None, stderr=subprocess.PIPE, encoding="utf-8")
+    # 'capturing' either stream means it won't get printed; set them to 'None' if you want them printed.
+    
+    # mode='a' - append to existing file, or create new
+    with log_filepath.open(mode='a', encoding="utf-8") as logfile:
+        logfile.write(" ".join(cmdline)); logfile.write("\n\n"); logfile.flush()
+        completed = subprocess.run(cmdline, stdout=None, stderr=logfile, encoding="utf-8") # prints stdout, logs stderr
+        if (completed.returncode != 0): print(f"[ERROR] nonzero exit-status: {completed.returncode}\n");
+        logfile.write('_'*120); logfile.write("\n\n")
+    
+    print("\n")
+    return
+
+
 if __name__ == "__main__":
     # args = ParseCmdline()
     args = ParseCmdline(["--tmpfs", "--noclean", "TestImage.png"])
@@ -341,12 +372,17 @@ if __name__ == "__main__":
         print(f"[ERROR] input-file: '{args.input_path}' does not exist")
         exit(1)
     
-    (workdir, wasNewlyCreated) = CreateTempdir(autodelete=args.autodelete, use_tmpfs=args.use_tmpfs)
-    log_directory = RotateMagickLogs(workdir.parent)  # TODO: don't call this function unless log-output is set to 'txtfile'
+    md5sum_output = subprocess.check_output(["md5sum", str(args.input_path)])
+    checksum = str(md5sum_output, encoding="utf-8").split()[0]
+    assert(len(checksum) == 32), "MD5-hash did not match expected length"
+    
+    (workdir, wasNewlyCreated) = CreateTempdir(checksum, autodelete=args.autodelete, use_tmpfs=args.use_tmpfs)
+    log_directory = RotateMagickLogs(workdir.parent)
     (baseimg,srcimg) = MakeImageSources(workdir, args.input_path)
     
-    print(baseimg); print(srcimg)
+    print(baseimg); print(srcimg)#; print(f"\n{'_'*120}\n")
     #os.system("identify -list resource") # imagemagick syntax
-    os.system(f"gm convert -list resources"); print("\n\n")
-    os.system(f"gm identify -verbose '{srcimg}'")
+    SubCommand([*"gm convert -list resources".split()], "resources", log_directory)
+    SubCommand([*"gm identify -verbose".split(), str(srcimg)], "identify", log_directory)
     
+    print("\ndone\n")
