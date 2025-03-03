@@ -7,9 +7,8 @@ import os
 from collections import Counter
 from datetime import datetime
 
-
-# name of folder used to store temporary-files
-TOPLEVEL_CACHE_NAME = "rgb_cache"
+import Globals
+import RGB
 
 
 # replaces nonbasic characters in text (for filename generation)
@@ -55,7 +54,10 @@ def ParseCmdline(arglist:list[str]|None = None) -> argparse.Namespace:
 
 
 def SetupENV() -> dict:
-    print("reading environment...")
+    """ Sets config/log path, and some resource limits (mostly higher than builtin defaults). \n
+    Checks environment and imports any defined ImageMagick/GraphicsMagick variables. \n
+    Performs validation for 'MAGICK_DEBUG' if defined externally, otherwise defaults to 'All'. \n 
+    Final values are applied and exported to both ImageMagick/GraphicsMagick-style variables """
     def VarNames(S:str): # lambda generating ImageMagick/GraphicsMagick-style environment-variables
         if (S.upper() == "THREADS"): return ("MAGICK_THREAD_LIMIT", "OMP_NUM_THREADS");
         if (S.upper() == "FILES"): return ("MAGICK_FILE_LIMIT", "MAGICK_LIMIT_FILES"); # non-plural in IM-style
@@ -65,19 +67,20 @@ def SetupENV() -> dict:
     # values specified here will be exported to env if not already defined, unless the value is 'None'
     env_defaults = {
         # resources
-           "DISK": "1GB",
-          "FILES":  4096,  # GraphicsMagick will automatically increase soft-ulimit if necessary (ulimit -S -n)
-            "MAP": "64GB", # normally 2x Memory-limit, for some reason
-         "MEMORY": "64GB",
+          "FILES": 4096, # GraphicsMagick will automatically increase soft-ulimit if necessary (ulimit -S -n)
+        "THREADS": (os.cpu_count() // 2), # 'cpu_count()' reports 2 cpus per physical core (hyperthreading)
+         "MEMORY": "32GB", # TODO: should match tmpfs size
+            "MAP": "32GB", # normally 2x Memory-limit, for some reason
+           "DISK":  "1GB",
+          "WIDTH": "32KP", # width/height are hard limits (throws exception if exceeded)
+         "HEIGHT": "32KP",
          "PIXELS": None, # GM-only?
-        "THREADS": os.cpu_count()//2, # 'cpu_count()' reports 2 cpus per physical core (hyperthreading)
-          "WIDTH": "128MP",
-         "HEIGHT": "128MP",
-           "AREA": None, # IM-only? suffix is 'KP/MP/GP'
+           "AREA": None, # IM-only? width*height; suffix is 'KP/MP/GP'. soft limit (unlike height/width); caches to disk if exceeded.
            "READ": None,
           "WRITE": None,
     }
     
+    print("reading environment...")
     # if both IM/GM-style variables are set for an entry, the last one (GM-style) will take precedence
     final_env = {
         EK: EV
@@ -135,7 +138,8 @@ def SetupENV() -> dict:
     print(f"using MAGICK_DEBUG:'{MAGICK_DBG_SETTING}'")
     final_env["MAGICK_DEBUG"] = (MAGICK_DBG_SETTING)
     
-    config_dir = os.getenv("MAGICK_CONFIGURE_PATH", (pathlib.Path.cwd()/"magick_configs").absolute())
+    # TODO: should not be relative to cwd; add a global var for the program path
+    config_dir = pathlib.Path(os.getenv("MAGICK_CONFIGURE_PATH", (pathlib.Path.cwd()/"magick_configs").absolute()))
     if (config_dir.exists() and config_dir.is_dir()): final_env["MAGICK_CONFIGURE_PATH"] = str(config_dir);
     else: print(f"[WARNING] bad path for 'MAGICK_CONFIGURE_PATH': {config_dir}");
     
@@ -155,22 +159,22 @@ def SetupENV() -> dict:
 
 def CreateTempdir(checksum:str, autodelete=True, use_tmpfs=False) -> tuple[pathlib.Path|None,bool]:
     """ 
-    :param checksum: hash of input file; used as directory prefix
-    :param autodelete: the new cache-directory will be deleted when program exits (has no effect if pre-existing cache is found)
-    :param use_tmpfs: the new cache-directory will be located on tmpfs rather than under cwd. (attempts to mount tmpfs if mountpoint doesn't exist)
-    :return: cache-directory's path and flag indicating that a pre-existing directory was found. (path is 'None' if tmpfs-mount failed)
+    :param checksum: hash of input file; used as prefix for temporary subdirectory
+    :param autodelete: the new temporary-directory will be deleted when program exits (has no effect if pre-existing temporary is reused)
+    :param use_tmpfs: toplevel will be located on tmpfs rather than under cwd. (attempts to mount tmpfs if mountpoint doesn't exist)
+    :return: new temp directory and flag indicating that a pre-existing directory was found. (path is 'None' if tmpfs-mount failed)
     """
-    tempdir_toplevel = pathlib.Path.cwd() / f"{TOPLEVEL_CACHE_NAME}" # parent of all per-process tempdirs
-    if use_tmpfs: tempdir_toplevel = pathlib.Path(f"/tmp/{TOPLEVEL_CACHE_NAME}");
+    tempdir_toplevel = pathlib.Path.cwd() / f"{Globals.TOPLEVEL_NAME}" # parent of all per-process tempdirs
+    if use_tmpfs: tempdir_toplevel = pathlib.Path(f"/tmp/{Globals.TOPLEVEL_NAME}");
     if (isNewlyCreated := (not tempdir_toplevel.exists())):
-        tempdir_toplevel.mkdir(); print(f"created toplevel cache: '{tempdir_toplevel}'")
+        tempdir_toplevel.mkdir(); print(f"created toplevel directory: '{tempdir_toplevel}'")
     
     # attempt to mount tmpfs
     if (use_tmpfs and isNewlyCreated):
         print("mounting tmpfs...")
         # mounting tmpfs only seems to work properly when the mountpoint has been created manually?? ('mkdir' above apparently not good enough)
-        #retval = os.system(f"mount --types tmpfs -o user,uid=1000,gid=1000,size=0,X-mount.mkdir tmpfs /tmp/{TOPLEVEL_CACHE_NAME}")
-        retval = os.system(f"mount /tmp/{TOPLEVEL_CACHE_NAME}") # this command is more reliable, but requires an entry in '/etc/fstab'
+        #retval = os.system(f"mount --types tmpfs -o user,uid=1000,gid=1000,size=0,X-mount.mkdir tmpfs /tmp/{Globals.TOPLEVEL_NAME}")
+        retval = os.system(f"mount /tmp/{Globals.TOPLEVEL_NAME}") # this command is more reliable, but requires an entry in '/etc/fstab'
         if not (retval == 0):
             print("Failed to mount tmpfs! Add an entry to '/etc/fstab' or mount it manually.")
             tempdir_toplevel.rmdir() # removing to ensure 'isNewlyCreated' will be 'True' again on next run
@@ -182,12 +186,12 @@ def CreateTempdir(checksum:str, autodelete=True, use_tmpfs=False) -> tuple[pathl
     tmpdir_suffix="_sfix" # TODO: generate tempdir suffix based on options.
     
     matching_dirs = [*tempdir_toplevel.glob(f"{tmpdir_prefix}*{tmpdir_suffix}/")]
-    assert(len(matching_dirs) <= 1), "[ERROR]: multiple cache directory matches!!! (this is a bug)"
+    assert(len(matching_dirs) <= 1), "[ERROR]: multiple pre-existing subdirectory matches!!! (this is a bug)"
     
-    if (isReusingCache := (len(matching_dirs) > 0)):
+    if (isReusingSubdir := (len(matching_dirs) > 0)):
         if autodelete: print("[WARNING] 'autodelete' parameter will be ignored (directory already exists)");
         tempdir = matching_dirs[0] # per-process tempdir - optionally autodeleted when the program exits
-        print(f"reusing cache directory: {tempdir} ")
+        print(f"reusing work directory: {tempdir}")
         assert(tempdir.is_dir()), "location on matching path was not actually a directory!?";
         iter_counts = Counter([F.is_file() for F in tempdir.iterdir()])
         (filecount, dircount) = (iter_counts.get(B,0) for B in (True,False))
@@ -215,13 +219,13 @@ def CreateTempdir(checksum:str, autodelete=True, use_tmpfs=False) -> tuple[pathl
         )][:num_time_segments])
         
         if (len(relative_time_str) == 0): 
-            print("[WARNING]: pre-existing cache-directory's relative-mtime is apparently zero. (this is probably a bug)")
+            print("[WARNING]: pre-existing work-directory's relative-mtime is apparently zero. (this is probably a bug)")
             relative_time_str = '(now)'
         else: relative_time_str = f"{relative_time_str} ago";
         
         mtime_str = f"Last-Modified: {tmpdir_mtime.date().isoformat()} ({relative_time_str})"
         print(f"{tempdir.name}: [ {filecount} files | {dircount} folders ][ {mtime_str} ]")
-        return (tempdir, isReusingCache)
+        return (tempdir, isReusingSubdir)
     
     # per-process tempdir - optionally autodeleted when the program exits
     tempdir = tempfile.TemporaryDirectory(
@@ -231,8 +235,8 @@ def CreateTempdir(checksum:str, autodelete=True, use_tmpfs=False) -> tuple[pathl
     print(f"created temp directory: '{tempdir.name}' [{'AUTO-DELETE' if autodelete else 'PRESERVE'}]")
     # must construct and return a 'pathlib.Path' because the behavior of '.name' is incompatible between the two classes
     # 'tempfile.TemporaryDirectory' returns the whole path, whereas 'pathlib.Path' would only return the last segment.
-    # and the other branch (reusing cache-directory) cannot return a Tempdir.
-    return (pathlib.Path(tempdir.name), isReusingCache)
+    # and the other branch (reusing work-directory) cannot return a Tempdir.
+    return (pathlib.Path(tempdir.name), isReusingSubdir)
 
 
 
@@ -241,18 +245,17 @@ def CreateTempdir(checksum:str, autodelete=True, use_tmpfs=False) -> tuple[pathl
 # If the path contains a directory, that directory must already exist, otherwise the logfile will simply not be written (silent failure; no warnings, of course)
 # also, the mechanisms for writing numbered logfiles are only triggered by the event-limit (see log.mgk);
 # otherwise, GraphicsMagick just overwrites the same logfile on every single run.
-def RotateMagickLogs(toplevel_cache_dir:pathlib.Path) -> pathlib.Path:
-    """ Create logging directory and rename existing logs.
-    Assumes that GraphicsMagick's logging-config (log.mgk) has 'filename' set to: "/tmp/rgb_cache/magicklogs/magickrgb_%d.log"
-    The presence of 'magickrgb' prefix indicates that the log should be rotated, and the filename should end in a digit.
-    :param toplevel_cache_dir: the directory referred to by 'TOPLEVEL_CACHE_NAME'
-    :return: path to log-directory
-    """
-    assert(toplevel_cache_dir.name == TOPLEVEL_CACHE_NAME), "expected log-directory to be under toplevel cache"
-    assert(toplevel_cache_dir.is_relative_to("/tmp/")), "reminder to change path in 'log.mgk'";
-    # TODO: come up with some workaround to switch paths between cache under tmpdir/cwd. maintain a symlink under cwd?
+def RotateMagickLogs(toplevel:pathlib.Path) -> pathlib.Path:
+    """ Create logging directory and rename existing logs.\n
+    Logs prefixed with 'magickrgb' will be rotated. \n Logs' filenames should end with digits. \n
+    Assumes that GraphicsMagick's logging-config (log.mgk) has 'filename' is set to: \n "/tmp/RGB_TOPLEVEL/magicklogs/magickrgb_%d.log" \n
+    :param toplevel: see 'Globals.TOPLEVEL_NAME'
+    :return: path to log-directory """
+    assert(toplevel.name == Globals.TOPLEVEL_NAME), "expected log-directory to be under toplevel"
+    assert(toplevel.is_relative_to("/tmp/")), "reminder to change path in 'log.mgk'";
+    # TODO: come up with some workaround to switch paths between toplevel under tmpdir/cwd. maintain a symlink under cwd?
     
-    new_logdir = toplevel_cache_dir / "magicklogs"
+    new_logdir = toplevel / "magicklogs"
     if new_logdir.exists(): assert(new_logdir.is_dir()), "existing log-directory was not actually a directory!?"
     else: new_logdir.mkdir(); print(f"created log-directory: '{new_logdir}'");
     
@@ -287,12 +290,12 @@ def RotateMagickLogs(toplevel_cache_dir:pathlib.Path) -> pathlib.Path:
 
 def MakeImageSources(workdir:pathlib.Path, input_file:pathlib.Path) -> tuple[pathlib.Path, pathlib.Path]:
     """
-    :param workdir: location of temp/cache directory
-    :param input_file: image being RGBified
-    :return: paths for: [baseimg (unmodified original), srcimg (preprocessed source)]
+    :param workdir: temp subdirectory for image-processing
+    :param input_file: image being RGBified; copied to workdir
+    :return: [baseimg (unmodified original), srcimg (preprocessed source)]
     """
     assert(workdir.exists() and workdir.is_dir())
-    assert(input_file.exists() and input_file.is_file())
+    assert(input_file.exists() and input_file.is_file() and (input_file.parent != workdir))
     
     # 'safe' filename makes it possible to parse output of 'identify'/'file' (otherwise splitting won't work if filename contained spaces)
     safe_filename = FilterText(str(input_file.stem))
@@ -328,10 +331,10 @@ def MakeImageSources(workdir:pathlib.Path, input_file:pathlib.Path) -> tuple[pat
 
 
 def SubCommand(cmdline:list[str], logname:str = "main", log_dir:pathlib.Path|None = None):
-    """ Runs a command in subprocess and logs output - automatically creating or appending to the log-file.
-    :param cmdline: string or list of command-line args (including command itself)
+    """ Run a command in subprocess and log output
+    :param cmdline: string or args-list (including command itself)
     :param logname: identifier used as base of filename
-    :param log_dir: path where logs will be written. Skip logging if 'None'
+    :param log_dir: path where logs will be written. Skip logging if 'None'. Logs are appended to or created automatically.
     """
     # TODO: get rid of 'log_dir' parameter (global or lambda)
     #if (type(cmdline) is str): cmdline = [*cmdline.split()] # TODO: add string inputs. just use shell=True?
@@ -377,12 +380,26 @@ if __name__ == "__main__":
     assert(len(checksum) == 32), "MD5-hash did not match expected length"
     
     (workdir, wasNewlyCreated) = CreateTempdir(checksum, autodelete=args.autodelete, use_tmpfs=args.use_tmpfs)
+    if(workdir is None): print(f"no workdir. exiting"); exit(2); # tmpfs mount attempted and failed
+    
     log_directory = RotateMagickLogs(workdir.parent)
     (baseimg,srcimg) = MakeImageSources(workdir, args.input_path)
+    # TODO: add log_directory to globals
+    Globals.UpdateGlobals(workdir, srcimg) # dbgprint=True
+    RGB.PrintGlobals() # no-op unless DEBUG_PRINT_GLOBALS / dbgprint
     
     print(baseimg); print(srcimg)#; print(f"\n{'_'*120}\n")
     #os.system("identify -list resource") # imagemagick syntax
     SubCommand([*"gm convert -list resources".split()], "resources", log_directory)
     SubCommand([*"gm identify -verbose".split(), str(srcimg)], "identify", log_directory)
+    
+    #RGB.SaveCommand("str_test", "command is a string")
+    #RGB.SaveCommand("cmd_test", ["list", "of", "commands"])
+    #RGB.SaveCommand("append_test", "first line written in new file!!!", append=True)
+    #RGB.SaveCommand("append_test", ["second", "save", "command!!!"], append=True)
+    (cmdlist, batchfile) = RGB.GenerateCommands(0.1, writeBatchfile=True)
+    if (batchfile is not None):
+        (createGIF, batch_cmd) = cmdlist
+        print('\n'); print(createGIF); print(batch_cmd) 
     
     print("\ndone\n")

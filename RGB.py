@@ -1,59 +1,112 @@
 import pathlib
+import Globals
+
+# defined here instead of in 'Globals' to ensure the values are checked within the scope/context of this file
+def PrintGlobals(dbgprint:bool = False):
+    """no-op unless dbgprint or DEBUG_PRINT_GLOBALS"""
+    if not (dbgprint or Globals.DEBUG_PRINT_GLOBALS): return
+    print(f"{'='*100}"); print("[printing globals]")
+    print(f"WORKING_DIR: {Globals.WORKING_DIR}")
+    print(f"SRCIMG_PATH: {Globals.SRCIMG_PATH}")
+    print(f"{'='*100}\n")
+    return
 
 
-def HueRotate(base_img:pathlib.Path, rotation_interval:int):
-    hue_shifts = [*[x for x in range(100,300,rotation_interval)], 300]
-    hue_rotation_commands = [
-        f"gm convert {base_img.name} -modulate 100,100,{str(x).zfill(3)} hueshift/{str(x).zfill(3)}{base_img.suffix}"
-        for x in hue_shifts
+# same as normal range, except with floats. Includes both 'start' and 'end' values
+def FloatRange(start:float, end:float, interval:float, precision:int=6) -> list[float]:
+    return [*((I/(10**precision)) for I in range(*[int(F*(10**precision)) for F in (start, end, interval)])), float(end)]
+
+# the interval between the penultimate number and the end can be awkward if it's not a clean divisor
+# should it overshoot the end instead? can the start/end be adjusted to compensate?
+
+
+def DecimalCount(F:float, parts:int=1) -> int | tuple[int,int] | tuple[int,int,int]:
+    """ Count digits before or after the decimal-point in a float.
+    :param parts: segment selection.
+      '0/1': whole/decimal, '2': both,
+      '-2': overall length, '3': (overall, both)
+    :return: length of a single segment, or tuple of both lengths (and maybe total)."""
+    (whole, decimal) = str(float(F)).rsplit('.', maxsplit=1)
+    lengths = (len(whole),len(decimal))
+    overall = (len(whole)+len(decimal))
+    if(parts == 2): return  lengths;
+    if(parts ==-2): return  overall;
+    if(parts == 3): return (overall, *lengths);
+    return lengths[parts]
+
+
+def HueRotations(stepsize:float) -> list[str]:
+    """ produces rotations for a given stepsize
+    :param stepsize: hue-rotation per frame.
+    :return: list of floating-point numbers as strings (formatted/padded to uniform length)
+    """
+    estPrecision = DecimalCount(stepsize) # digits after the decimal in stepsize
+    # 100 is unchanged, and the domain is 0-200 (mod 200); the cycle completes at 300 (the original again) (GraphicsMagick 'modulate')
+    endpoints = ([100, 300] if (stepsize > 0) else [300, 100])
+    rotationSteps = FloatRange(*endpoints, stepsize, estPrecision)
+    
+    topPrecision = max([DecimalCount(num) for num in rotationSteps])
+    if (topPrecision != estPrecision): # it shouldn't be possible for a decimal's whole-number multiples to increase in length.
+        print(f"[WARNING] float-imprecision detected. FloatRange may be inaccurate.")
+        # TODO: retry with a higher precision, within a limit
+    
+    fmtstr = '{' + f':3.{topPrecision}f' + '}' # assume 3 leading digits (range is 100-300)
+    rotation_strs = [fmtstr.format(N) for N in rotationSteps]
+    assert((strs_setlen := len(set(rotation_strs))) == (strs_len := len(rotation_strs))), f"name collision occurred! [#rotation_strs: {strs_len} | #unique: {strs_setlen}]";
+    print(f"stepsize: {stepsize:.{estPrecision}f} | rotation steps: {strs_len}")
+    return rotation_strs
+
+
+def SaveCommand(filename: str, command:str|list[str], append:bool=False) -> pathlib.Path:
+    """ writes/appends commands to file; returns written filepath"""
+    cmdlist = (command if(type(command) is list) else [command]); del command
+    workdir = Globals.WORKING_DIR; assert (workdir.exists() and workdir.is_dir());
+    cmd_dir = workdir/"batchfile"; cmdfile = Globals.WORKING_DIR/cmd_dir/filename;
+    if not cmd_dir.exists: cmd_dir.mkdir(); assert(cmd_dir.is_dir());
+    
+    savs = ("appending" if (append and cmdfile.exists()) else "saving")
+    len_str = f"{len(cmdlist)} command{('s' if(len(cmdlist) > 1) else '')}"
+    if(cmdfile.exists() and not append): print(f"\n[WARNING] overwriting existing cmdfile!");
+    print(f"{savs} {len_str} to {("new " if(not cmdfile.exists()) else '')}file: {cmdfile}")
+    
+    with cmdfile.open(mode=('a' if append else 'w'), encoding="utf-8") as newfile:
+        newfile.write('\n'.join(cmdlist)); newfile.write('\n\n')
+    assert(cmdfile.exists() and cmdfile.is_file())
+    return cmdfile
+
+
+def GenerateCommands(stepsize:float, writeBatchfile:bool=False):
+    workdir = Globals.WORKING_DIR; assert(workdir.exists() and workdir.is_dir())
+    assert(workdir.parent.name == Globals.TOPLEVEL_NAME), f"working directory expected to be under '{Globals.TOPLEVEL_NAME}'";
+    assert(Globals.SRCIMG_PATH.is_relative_to(Globals.WORKING_DIR)), f"srcimg expected to be under '{Globals.TOPLEVEL_NAME}'";
+    
+    frames_directory = workdir/"hue_rotations"
+    if frames_directory.exists(): assert(frames_directory.is_dir());
+    else: frames_directory.mkdir();
+    
+    rotation_strs = HueRotations(stepsize)
+    cmdlist = [
+        "convert {0} -modulate 100,100,{1} {2}".format(
+            Globals.SRCIMG_PATH,
+            hue_rotation,
+            f"{frames_directory}/{hue_rotation}.png"
+        ) for hue_rotation in rotation_strs
     ]
-    morph_command = f"gm convert hueshift/*{base_img.suffix} -morph {rotation_interval} -monitor {base_img.stem}_RGB.gif"
-    return (hue_rotation_commands, morph_command)
+    
+    batchfile = (SaveCommand("generate_frames", cmdlist) if writeBatchfile else None)
+    use_morph = False; morph_arg = ("-morph 10" if use_morph else "")
+    # -tap-mode on
+    batch_cmd = f"gm batch -echo on -feedback on -stop-on-error on '{batchfile}'"
+    createGIF = f"convert -verbose -monitor {frames_directory}/*.png {morph_arg} '{Globals.SRCIMG_PATH.with_suffix('')}_RGB.gif'"
+    # note that 'createGIF' doesn't have 'gm' command; so you can easily append it to batchfile with 'SaveCommand'
+    # TODO: ffmpeg mp4, graphicsmagick MPEG (.mpg) output? APNG?
+    
+    if writeBatchfile: return ([createGIF, batch_cmd], batchfile);
+    return ([*cmdlist, createGIF], None)
 
 
-def SaveCommands(cmdlist:list[str]):
-    cmdfile = pathlib.Path.cwd() / "rgb_cmdlist.bash"
-    with cmdfile.open(mode='w', encoding="utf-8") as newfile:
-        newfile.write('\n'.join(cmdlist))
-        newfile.write('\n')
-
-
-# TODO: handle transparency in input!!
 # TODO: transcode input image to PNG and downscale if necessary
 # TODO: frames generated for GIF output need preprocessing to reduced (255) color-palette
+# transparency doesn't seem to be a problem, as long as source was PNG
 
 # TODO: handle GIF/video inputs (divide into frames and interpolate between them)
-
-
-if __name__ == "__main__":
-    cwd = pathlib.Path.cwd()
-    img = cwd / "imgName.png"
-    assert(img.exists())
-    
-    
-    hue_rotation_commands = [
-      f'convert {img.stem}.png -modulate 100,100,000 hueshift/000.png',
-      f'convert {img.stem}.png -modulate 100,100,010 hueshift/010.png',
-      f'convert {img.stem}.png -modulate 100,100,020 hueshift/020.png',
-      f'convert {img.stem}.png -modulate 100,100,030 hueshift/030.png',
-      f'convert {img.stem}.png -modulate 100,100,040 hueshift/040.png',
-      f'convert {img.stem}.png -modulate 100,100,050 hueshift/050.png',
-      f'convert {img.stem}.png -modulate 100,100,060 hueshift/060.png',
-      f'convert {img.stem}.png -modulate 100,100,070 hueshift/070.png',
-      f'convert {img.stem}.png -modulate 100,100,080 hueshift/080.png',
-      f'convert {img.stem}.png -modulate 100,100,090 hueshift/090.png',
-      f'convert {img.stem}.png -modulate 100,100,100 hueshift/100.png',
-      f'convert {img.stem}.png -modulate 100,100,110 hueshift/110.png',
-      f'convert {img.stem}.png -modulate 100,100,120 hueshift/120.png',
-      f'convert {img.stem}.png -modulate 100,100,130 hueshift/130.png',
-      f'convert {img.stem}.png -modulate 100,100,140 hueshift/140.png',
-      f'convert {img.stem}.png -modulate 100,100,150 hueshift/150.png',
-      f'convert {img.stem}.png -modulate 100,100,160 hueshift/160.png',
-      f'convert {img.stem}.png -modulate 100,100,170 hueshift/170.png',
-      f'convert {img.stem}.png -modulate 100,100,180 hueshift/180.png',
-      f'convert {img.stem}.png -modulate 100,100,190 hueshift/190.png',
-      f'convert {img.stem}.png -modulate 100,100,200 hueshift/200.png',
-    ]
-    morph_command = f'convert hueshift/*.png -morph 10 -monitor {img.stem}_RGB.gif'
-    all_hueshift_cmd = '\n'.join(hue_rotation_commands)+'\n\n'
-

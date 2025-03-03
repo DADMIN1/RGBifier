@@ -1,9 +1,9 @@
 # in order to put the cache / working-directory onto a tmpfs, you'll need to add an entry to /etc/fstab:
-tmpfs   /tmp/rgb_cache  tmpfs   noauto,user,uid=1000,gid=1000,X-mount.mkdir    0 0
+tmpfs   /tmp/RGB_TOPLEVEL  tmpfs   noauto,user,uid=1000,gid=1000,X-mount.mkdir    0 0
 
 # or create/mount it manually (mount requires root permissions here):
-mkdir /tmp/rgb_cache
-sudo mount --types tmpfs -o user,uid=1000,gid=1000,X-mount.mkdir tmpfs /tmp/rgb_cache
+mkdir /tmp/RGB_TOPLEVEL
+sudo mount --types tmpfs -o user,uid=1000,gid=1000,X-mount.mkdir tmpfs /tmp/RGB_TOPLEVEL
 
 # you can add an option to control size of tmpfs like this: 'size=32g'
 # 'size' can be an absolute size ('32g'), or percentage of total RAM ('75%'). default: "size=50%"
