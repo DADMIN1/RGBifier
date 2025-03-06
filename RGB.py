@@ -62,7 +62,7 @@ def SaveCommand(filename: str, command:str|list[str], append:bool=False) -> path
     cmdlist = (command if(type(command) is list) else [command]); del command
     workdir = Globals.WORKING_DIR; assert (workdir.exists() and workdir.is_dir());
     cmd_dir = workdir/"batchfile"; cmdfile = Globals.WORKING_DIR/cmd_dir/filename;
-    if not cmd_dir.exists: cmd_dir.mkdir(); assert(cmd_dir.is_dir());
+    if not cmd_dir.exists(): cmd_dir.mkdir(); assert(cmd_dir.is_dir());
     
     savs = ("appending" if (append and cmdfile.exists()) else "saving")
     len_str = f"{len(cmdlist)} command{('s' if(len(cmdlist) > 1) else '')}"
@@ -75,33 +75,40 @@ def SaveCommand(filename: str, command:str|list[str], append:bool=False) -> path
     return cmdfile
 
 
-def GenerateCommands(stepsize:float, writeBatchfile:bool=False):
+def GenerateCommands(stepsize:float, frameformat="MPC", writeBatchfile:bool=False):
+    valid_fmts = ["MPC","PNG"]; frameformat = frameformat.lower()
     workdir = Globals.WORKING_DIR; assert(workdir.exists() and workdir.is_dir())
     assert(workdir.parent.name == Globals.TOPLEVEL_NAME), f"working directory expected to be under '{Globals.TOPLEVEL_NAME}'";
     assert(Globals.SRCIMG_PATH.is_relative_to(Globals.WORKING_DIR)), f"srcimg expected to be under '{Globals.TOPLEVEL_NAME}'";
+    assert(frameformat.upper() in valid_fmts), f"unsupported frameformat: '{frameformat}';\n available formats: {valid_fmts}";
     
-    frames_directory = workdir/"hue_rotations"
+    frames_directory = workdir/f"hue_rotations_{frameformat}"
     if frames_directory.exists(): assert(frames_directory.is_dir());
     else: frames_directory.mkdir();
     
-    rotation_strs = HueRotations(stepsize)
-    cmdlist = [
-        "convert {0} -modulate 100,100,{1} {2}".format(
-            Globals.SRCIMG_PATH,
-            hue_rotation,
-            f"{frames_directory}/{hue_rotation}.png"
-        ) for hue_rotation in rotation_strs
-    ]
+    cache_srcimg_path = workdir/"cached_srcimg.mpc" # magick persistent cache
+    cache_srcimg_str = f"convert '{Globals.SRCIMG_PATH}' '{cache_srcimg_path}'"
     
-    batchfile = (SaveCommand("generate_frames", cmdlist) if writeBatchfile else None)
+    rotation_strs = HueRotations(stepsize)
+    cmdlist = [cache_srcimg_str, *[
+        "convert '{0}' -modulate 100,100,{1} '{2}'".format(
+            cache_srcimg_path,
+            hue_rotation,
+            f"{frames_directory}/{hue_rotation}.{frameformat}"
+        ) for hue_rotation in rotation_strs
+    ]]
+    
+    batchfile = (SaveCommand(f"generate_frames_{frameformat}", cmdlist) if writeBatchfile else None)
     use_morph = False; morph_arg = ("-morph 10" if use_morph else "")
-    # -tap-mode on
-    batch_cmd = f"gm batch -echo on -feedback on -stop-on-error on '{batchfile}'"
-    createGIF = f"convert -verbose -monitor {frames_directory}/*.png {morph_arg} '{Globals.SRCIMG_PATH.with_suffix('')}_RGB.gif'"
+    # batch_cmd can use '-tap-mode on'/'-feedback on' for PASS/FAIL info
+    batch_cmd = f"gm batch -echo on -stop-on-error on {batchfile}"
+    output_filename = f"{Globals.SRCIMG_PATH.with_suffix('').name}_RGB.gif".removeprefix('srcimg_')
+    createGIF = f"convert -verbose -monitor {frames_directory}/*.{frameformat} {morph_arg} {workdir/output_filename}"
     # note that 'createGIF' doesn't have 'gm' command; so you can easily append it to batchfile with 'SaveCommand'
     # TODO: ffmpeg mp4, graphicsmagick MPEG (.mpg) output? APNG?
     
-    if writeBatchfile: return ([createGIF, batch_cmd], batchfile);
+    #TODO: generate colormap
+    if writeBatchfile: return ([batch_cmd, createGIF], batchfile);
     return ([*cmdlist, createGIF], None)
 
 

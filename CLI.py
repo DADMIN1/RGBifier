@@ -330,18 +330,18 @@ def MakeImageSources(workdir:pathlib.Path, input_file:pathlib.Path) -> tuple[pat
     return (baseimg_path, srcimg_path)
 
 
-def SubCommand(cmdline:list[str], logname:str = "main", log_dir:pathlib.Path|None = None):
+def SubCommand(cmdline:list[str]|str, logname:str = "main", log_dir:pathlib.Path|None = None):
     """ Run a command in subprocess and log output
     :param cmdline: string or args-list (including command itself)
     :param logname: identifier used as base of filename
     :param log_dir: path where logs will be written. Skip logging if 'None'. Logs are appended to or created automatically.
     """
-    # TODO: get rid of 'log_dir' parameter (global or lambda)
-    #if (type(cmdline) is str): cmdline = [*cmdline.split()] # TODO: add string inputs. just use shell=True?
+    if (type(cmdline) is str): cmdline = [*cmdline.split()] # TODO: add string inputs. just use shell=True?
     print('_'*120); print()
     print(f'subcommand: "{cmdline}"')
-    if log_dir is None: print("[WARNING] output will not be logged ('log_dir' unspecified)"); return;
-    if (not log_dir.exists()): print(f"log_dir does not exist: '{log_dir}'"); return;
+    if log_dir is None:
+        if (log_dir := Globals.LOGGING_DIR) is None: print(f"[ERROR] no valid 'log_dir'"); return; 
+    if (not log_dir.exists()): print(f"creating log_dir: '{log_dir}'"); log_dir.mkdir();
     log_filepath = log_dir / f"magickrgb_{logname}.log"
     print(f"logging to: '{log_filepath}'")
     print('_'*120); print()
@@ -384,22 +384,25 @@ if __name__ == "__main__":
     
     log_directory = RotateMagickLogs(workdir.parent)
     (baseimg,srcimg) = MakeImageSources(workdir, args.input_path)
-    # TODO: add log_directory to globals
-    Globals.UpdateGlobals(workdir, srcimg) # dbgprint=True
+    Globals.UpdateGlobals(workdir, srcimg, log_directory) # dbgprint=True
     RGB.PrintGlobals() # no-op unless DEBUG_PRINT_GLOBALS / dbgprint
     
     print(baseimg); print(srcimg)#; print(f"\n{'_'*120}\n")
     #os.system("identify -list resource") # imagemagick syntax
-    SubCommand([*"gm convert -list resources".split()], "resources", log_directory)
-    SubCommand([*"gm identify -verbose".split(), str(srcimg)], "identify", log_directory)
+    SubCommand("gm convert -list resources", "resources")
+    SubCommand(f"gm identify -verbose {str(srcimg)}", "identify")
     
     #RGB.SaveCommand("str_test", "command is a string")
     #RGB.SaveCommand("cmd_test", ["list", "of", "commands"])
     #RGB.SaveCommand("append_test", "first line written in new file!!!", append=True)
     #RGB.SaveCommand("append_test", ["second", "save", "command!!!"], append=True)
+    
+    #(cmdlist, batchfile) = RGB.GenerateCommands(10, frameformat="PNG", writeBatchfile=True)
     (cmdlist, batchfile) = RGB.GenerateCommands(0.1, writeBatchfile=True)
     if (batchfile is not None):
-        (createGIF, batch_cmd) = cmdlist
-        print('\n'); print(createGIF); print(batch_cmd) 
+        (batch_cmd, createGIF) = cmdlist
+        print('\n'); print(batch_cmd); print(createGIF)
+        SubCommand(batch_cmd, "gen_frames")
+        SubCommand(createGIF, "render_GIF")
     
     print("\ndone\n")
