@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+ Empty ImageMagick Delegate command file (to prevent any delegates from loading)
+ Use 'identify -list Delegate' to verify how the contents of this file has been parsed.
+-->
+<delegatemap>
+</delegatemap>

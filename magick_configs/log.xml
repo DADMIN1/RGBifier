@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- GraphicsMagick logging config -->
+<!-- ImageMagick logging config -->
 <!--
   --------------------------------------
   |   events [comma separated list]    |
@@ -39,7 +39,7 @@
   <!-- <log events="configure,resource,render,temporaryFile,transform,warning,error,exception" /> -->
   <log events="all" />  <!-- environment-variable 'MAGICK_DEBUG' overrides this value -->
   <log output="stderr" />
-  <log filename="/tmp/RGB_TOPLEVEL/magicklogs/magickrgb_GM%d.log" />
+  <log filename="/tmp/RGB_TOPLEVEL/magicklogs/magickrgb_IM%d.log" />
   <!-- filename is relative to CWD. if the filename contains contains a directory,
   that directory must already exist (won't be created, logging silently fails) -->
   
