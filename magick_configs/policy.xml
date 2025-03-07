@@ -2,8 +2,10 @@
 <!-- ImageMagick policy config -->
 <policymap>
   <policy domain="Undefined" rights="none"/>
-  <policy domain="coder" rights="none" pattern="*"/>
-  <policy domain="module" rights="none" pattern="*"/>
+  <!-- <policy domain="coder" rights="none" pattern="*"/> -->
+  <!-- <policy domain="module" rights="none" pattern="*"/> -->
+  <policy domain="module" rights="read | write" pattern="{GIF,PNG}"/>
+  <policy domain="module" rights="read | write" pattern="{MPC}" stealth="true"/>
   <!-- Do not permit any delegates to execute. -->
   <policy domain="delegate" rights="none" pattern="*"/>
   <!-- Do not permit any image filters to load. -->
@@ -13,8 +15,8 @@
   <!-- Indirect reads are not permitted. -->
   <policy domain="path" rights="none" pattern="@*"/>
   <!-- only allow reads/writes under toplevel work directory -->
-  <policy domain="path" rights="none" pattern="*"/>
-  <policy domain="path" rights="read | write" pattern="/tmp/RGB_TOPLEVEL/*"/>
+  <!-- <policy domain="path" rights="none" pattern="*"/> -->
+  <!-- <policy domain="path" rights="read | write" pattern="/tmp/RGB_TOPLEVEL/*"/> -->
   <!-- Set maximum parallel threads. -->
   <policy domain="resource" name="thread" value="24"/>
   <!-- Set maximum number of open pixel cache files. When this limit is exceeded, any subsequent pixels cached to disk are closed and reopened on demand. -->
@@ -26,7 +28,7 @@
   <!-- Set maximum amount of memory map in bytes to allocate for the pixel cache. When this limit is exceeded, the image pixels are cached to disk. -->
   <policy domain="resource" name="map" value="32GB"/>
   <!-- Set maximum amount of disk space in bytes permitted for use by the pixel cache. When this limit is exceeded, the pixel cache is not be created and an exception is thrown. -->
-  <policy domain="resource" name="disk" value="1GB"/>
+  <policy domain="resource" name="disk" value="32GB"/>
   <!-- Set the maximum width of an image.  When this limit is exceeded, an exception is thrown. -->
   <policy domain="resource" name="width" value="32KP"/>
   <!-- Set the maximum height of an image.  When this limit is exceeded, an exception is thrown. -->

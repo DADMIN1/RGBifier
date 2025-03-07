@@ -33,6 +33,7 @@ def ParseCmdline(arglist:list[str]|None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     #TODO: group args
     
+    parser.add_argument("--magick", choices=["IM","GM"], default="GM")
     parser.add_argument("--tmpfs", dest="use_tmpfs", action="store_true", default=False, help="ensure all temp-files are created on a tmpfs; arg is size of tmpfs")
     parser.add_argument("--noclean", dest="autodelete", action="store_false", default=True, help="preserve temp files (deleted by default)")
     
@@ -46,6 +47,8 @@ def ParseCmdline(arglist:list[str]|None = None) -> argparse.Namespace:
     if arglist is None: parsed_args = parser.parse_args()
     else: parsed_args = parser.parse_args(arglist)
     # assert(type(parsed_args.fps) is int)
+    
+    Globals.MAGICKLIBRARY = parsed_args.magick
     
     print(parsed_args) # Namespace(...)
     PrintDict(parsed_args.__dict__, "args")
@@ -71,7 +74,7 @@ def SetupENV() -> dict:
         "THREADS": (os.cpu_count() // 2), # 'cpu_count()' reports 2 cpus per physical core (hyperthreading)
          "MEMORY": "32GB", # TODO: should match tmpfs size
             "MAP": "32GB", # normally 2x Memory-limit, for some reason
-           "DISK":  "1GB",
+           "DISK": "32GB", # setting this equal to 'Memory' is necessary for tmpfs: imagemagick seems to count loading '.mpc' files as disk usage
           "WIDTH": "32KP", # width/height are hard limits (throws exception if exceeded)
          "HEIGHT": "32KP",
          "PIXELS": None, # GM-only?
@@ -183,7 +186,7 @@ def CreateTempdir(checksum:str, autodelete=True, use_tmpfs=False) -> tuple[pathl
         # TODO: should verify that new or pre-existing tempdir_toplevel is actually tmpfs
     
     tmpdir_prefix=f"{checksum}_"
-    tmpdir_suffix="_sfix" # TODO: generate tempdir suffix based on options.
+    tmpdir_suffix=f"_{Globals.MAGICKLIBRARY}"
     
     matching_dirs = [*tempdir_toplevel.glob(f"{tmpdir_prefix}*{tmpdir_suffix}/")]
     assert(len(matching_dirs) <= 1), "[ERROR]: multiple pre-existing subdirectory matches!!! (this is a bug)"
@@ -330,18 +333,20 @@ def MakeImageSources(workdir:pathlib.Path, input_file:pathlib.Path) -> tuple[pat
     return (baseimg_path, srcimg_path)
 
 
-def SubCommand(cmdline:list[str]|str, logname:str = "main", log_dir:pathlib.Path|None = None):
-    """ Run a command in subprocess and log output
+def SubCommand(cmdline:list[str]|str, logname:str = "main", isCmdSequence:bool = False):
+    """ Run a command in subprocess and log output. Logs are appended to or created automatically.
     :param cmdline: string or args-list (including command itself)
-    :param logname: identifier used as base of filename
-    :param log_dir: path where logs will be written. Skip logging if 'None'. Logs are appended to or created automatically.
+    :param logname: identifier used in filename. Skip logging if None.
+    :param isCmdSequence: 'cmdline' is a list of commands to execute (rather than a single cmdline split by word)
     """
-    if (type(cmdline) is str): cmdline = [*cmdline.split()] # TODO: add string inputs. just use shell=True?
     print('_'*120); print()
-    print(f'subcommand: "{cmdline}"')
-    if log_dir is None:
-        if (log_dir := Globals.LOGGING_DIR) is None: print(f"[ERROR] no valid 'log_dir'"); return; 
+    print(f'subcommand: "{("\n".join(cmdline) if isCmdSequence else cmdline)}"')
+    if (log_dir := Globals.LOGGING_DIR) is None: print(f"[ERROR] no valid 'log_dir'"); return; 
     if (not log_dir.exists()): print(f"creating log_dir: '{log_dir}'"); log_dir.mkdir();
+    
+    # TODO: Skip logging if None
+    if logname is None: print("skipping logging")
+    
     log_filepath = log_dir / f"magickrgb_{logname}.log"
     print(f"logging to: '{log_filepath}'")
     print('_'*120); print()
@@ -357,17 +362,21 @@ def SubCommand(cmdline:list[str]|str, logname:str = "main", log_dir:pathlib.Path
     
     # mode='a' - append to existing file, or create new
     with log_filepath.open(mode='a', encoding="utf-8") as logfile:
-        logfile.write(" ".join(cmdline)); logfile.write("\n\n"); logfile.flush()
-        completed = subprocess.run(cmdline, stdout=None, stderr=logfile, encoding="utf-8") # prints stdout, logs stderr
+        cmdline_str = (cmdline if (type(cmdline) is str) else ("\n" if isCmdSequence else " ").join(cmdline))
+        logfile.write(cmdline_str); logfile.write("\n\n"); logfile.flush()
+        cmd_seq = (cmdline if isCmdSequence else [cmdline])
+        for cmd in cmd_seq:
+            completed = subprocess.run(cmd, stdout=None, stderr=logfile, encoding="utf-8", shell=(type(cmd) is str)) # prints stdout, logs stderr
         if (completed.returncode != 0): print(f"[ERROR] nonzero exit-status: {completed.returncode}\n");
         logfile.write('_'*120); logfile.write("\n\n")
     
     print("\n")
-    return
+    return completed.returncode
 
 
 if __name__ == "__main__":
     # args = ParseCmdline()
+    # args = ParseCmdline(["--magick=IM", "--tmpfs", "--noclean", "TestImage.png"])
     args = ParseCmdline(["--tmpfs", "--noclean", "TestImage.png"])
     env_vars = SetupENV()
     
@@ -388,21 +397,25 @@ if __name__ == "__main__":
     RGB.PrintGlobals() # no-op unless DEBUG_PRINT_GLOBALS / dbgprint
     
     print(baseimg); print(srcimg)#; print(f"\n{'_'*120}\n")
-    #os.system("identify -list resource") # imagemagick syntax
-    SubCommand("gm convert -list resources", "resources")
-    SubCommand(f"gm identify -verbose {str(srcimg)}", "identify")
+    SubCommand(f"{('gm convert -list resources' if (Globals.MAGICKLIBRARY=="GM") else 'identify -list resource')}", "resources")
+    SubCommand(f"{('gm ' if (Globals.MAGICKLIBRARY=="GM") else '')}identify -verbose {str(srcimg)}", "identify")
     
     #RGB.SaveCommand("str_test", "command is a string")
     #RGB.SaveCommand("cmd_test", ["list", "of", "commands"])
     #RGB.SaveCommand("append_test", "first line written in new file!!!", append=True)
     #RGB.SaveCommand("append_test", ["second", "save", "command!!!"], append=True)
     
-    #(cmdlist, batchfile) = RGB.GenerateCommands(10, frameformat="PNG", writeBatchfile=True)
-    (cmdlist, batchfile) = RGB.GenerateCommands(0.1, writeBatchfile=True)
+    # (cmdlist, batchfile) = RGB.GenerateCommands(2, magicklib="IM")
+    (cmdlist, batchfile) = RGB.GenerateCommands(2)
     if (batchfile is not None):
         (batch_cmd, createGIF) = cmdlist
         print('\n'); print(batch_cmd); print(createGIF)
         SubCommand(batch_cmd, "gen_frames")
+        SubCommand(createGIF, "render_GIF")
+    else:
+        framegen_cmds = cmdlist[1:-1]; createGIF = cmdlist[-1]
+        SubCommand(cmdlist[0], "cache_srcimg")
+        SubCommand(framegen_cmds, "gen_frames", isCmdSequence=True)
         SubCommand(createGIF, "render_GIF")
     
     print("\ndone\n")

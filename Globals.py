@@ -2,6 +2,7 @@ from pathlib import Path # just for type hints
 
 # toplevel directory: contains 'WORKING_DIR'(s) and 'magicklogs'
 TOPLEVEL_NAME = "RGB_TOPLEVEL"
+MAGICKLIBRARY = "GM" # GM/IM
 
 # set at runtime in 'CLI.py'
 WORKING_DIR:Path|None = None

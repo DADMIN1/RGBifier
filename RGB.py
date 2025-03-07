@@ -75,12 +75,14 @@ def SaveCommand(filename: str, command:str|list[str], append:bool=False) -> path
     return cmdfile
 
 
-def GenerateCommands(stepsize:float, frameformat="MPC", writeBatchfile:bool=False):
+def GenerateCommands(stepsize:float, frameformat="MPC", writeBatchfile:bool=True):
     valid_fmts = ["MPC","PNG"]; frameformat = frameformat.lower()
     workdir = Globals.WORKING_DIR; assert(workdir.exists() and workdir.is_dir())
     assert(workdir.parent.name == Globals.TOPLEVEL_NAME), f"working directory expected to be under '{Globals.TOPLEVEL_NAME}'";
     assert(Globals.SRCIMG_PATH.is_relative_to(Globals.WORKING_DIR)), f"srcimg expected to be under '{Globals.TOPLEVEL_NAME}'";
     assert(frameformat.upper() in valid_fmts), f"unsupported frameformat: '{frameformat}';\n available formats: {valid_fmts}";
+    
+    if (Globals.MAGICKLIBRARY == "IM"): writeBatchfile = False; # 'batch' is GM-only
     
     frames_directory = workdir/f"hue_rotations_{frameformat}"
     if frames_directory.exists(): assert(frames_directory.is_dir());
@@ -100,11 +102,13 @@ def GenerateCommands(stepsize:float, frameformat="MPC", writeBatchfile:bool=Fals
     
     batchfile = (SaveCommand(f"generate_frames_{frameformat}", cmdlist) if writeBatchfile else None)
     use_morph = False; morph_arg = ("-morph 10" if use_morph else "")
+    remap_arg = ("+remap" if (Globals.MAGICKLIBRARY=="IM") else "") # IM-only; GM does not recognize
     # batch_cmd can use '-tap-mode on'/'-feedback on' for PASS/FAIL info
-    batch_cmd = f"gm batch -echo on -stop-on-error on {batchfile}"
+    batch_cmd = f"gm batch -echo on -stop-on-error on '{batchfile}'"
     output_filename = f"{Globals.SRCIMG_PATH.with_suffix('').name}_RGB.gif".removeprefix('srcimg_')
-    createGIF = f"convert -verbose -monitor {frames_directory}/*.{frameformat} {morph_arg} {workdir/output_filename}"
-    # note that 'createGIF' doesn't have 'gm' command; so you can easily append it to batchfile with 'SaveCommand'
+    # imagemagick creates a gigantic multi-gigabyte log if '-verbose' and '-monitor' are enabled
+    convert_cmd = ("gm convert -verbose -monitor" if (Globals.MAGICKLIBRARY=="GM") else "convert")
+    createGIF = f"{convert_cmd} '{frames_directory}/*.{frameformat}' {morph_arg} {remap_arg} '{workdir/output_filename}'"
     # TODO: ffmpeg mp4, graphicsmagick MPEG (.mpg) output? APNG?
     
     #TODO: generate colormap
