@@ -339,10 +339,11 @@ def SubCommand(cmdline:list[str]|str, logname:str = "main", isCmdSequence:bool =
     :param logname: identifier used in filename. Skip logging if None.
     :param isCmdSequence: 'cmdline' is a list of commands to execute (rather than a single cmdline split by word)
     """
-    print('_'*120); print()
-    print(f'subcommand: "{("\n".join(cmdline) if isCmdSequence else cmdline)}"')
+    print('_'*120); print(); L = "\n  "
+    subcmd_str = ('commandseq: [{1}{0}\n]' if isCmdSequence else 'subcommand: "{0}"')
+    print(subcmd_str.format((f",{L}".join(cmdline) if isCmdSequence else cmdline),L))
     if (log_dir := Globals.LOGGING_DIR) is None: print(f"[ERROR] no valid 'log_dir'"); return; 
-    if (not log_dir.exists()): print(f"creating log_dir: '{log_dir}'"); log_dir.mkdir();
+    if not log_dir.exists(): print(f"creating log_dir: '{log_dir}'"); log_dir.mkdir();
     
     # TODO: Skip logging if None
     if logname is None: print("skipping logging")
@@ -405,17 +406,26 @@ if __name__ == "__main__":
     #RGB.SaveCommand("append_test", "first line written in new file!!!", append=True)
     #RGB.SaveCommand("append_test", ["second", "save", "command!!!"], append=True)
     
-    # (cmdlist, batchfile) = RGB.GenerateCommands(2, magicklib="IM")
-    (cmdlist, batchfile) = RGB.GenerateCommands(2)
+    DEBUG_PRINT_CMDS = False # print commands before passing to 'SubCommand'
+    DEBUG_PRINT_ONLY = False # exit after printing commands; do not execute
+    DEBUG_PRINT_CMDS = (DEBUG_PRINT_ONLY or DEBUG_PRINT_CMDS) # auto-enable when 'PRINT_ONLY' is True
+    
+    #(cmdlist, batchfile) = RGB.GenerateCommands(10, writeMPC=True, writePNG=True, writeBatchfile=False)
+    (cmdlist, batchfile) = RGB.GenerateCommands(10)
     if (batchfile is not None):
-        (batch_cmd, createGIF) = cmdlist
-        print('\n'); print(batch_cmd); print(createGIF)
-        SubCommand(batch_cmd, "gen_frames")
-        SubCommand(createGIF, "render_GIF")
+        (batch_cmd, rendercmd) = cmdlist
+        if(DEBUG_PRINT_CMDS): print('\n'); print(batch_cmd); print(rendercmd);
+        if(DEBUG_PRINT_ONLY): print("[DEBUG_PRINT_ONLY] early exit"); exit(0);
+        SubCommand(batch_cmd, "frame_gen")
+        SubCommand(rendercmd, "rendering")
     else:
-        framegen_cmds = cmdlist[1:-1]; createGIF = cmdlist[-1]
+        framegen_cmds = cmdlist[1:-1]; rendercmd = cmdlist[-1]
+        if (DEBUG_PRINT_CMDS):
+            print('\n'); print(cmdlist[0]) # cache_srcimg cmd
+            print('\n'.join(framegen_cmds)); print(rendercmd)
+        if (DEBUG_PRINT_ONLY): print("[DEBUG_PRINT_ONLY] early exit"); exit(0);
         SubCommand(cmdlist[0], "cache_srcimg")
-        SubCommand(framegen_cmds, "gen_frames", isCmdSequence=True)
-        SubCommand(createGIF, "render_GIF")
+        SubCommand(framegen_cmds, "frame_gen", isCmdSequence=True)
+        SubCommand(rendercmd, "rendering")
     
     print("\ndone\n")
