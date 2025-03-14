@@ -1,38 +1,38 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- ImageMagick policy config -->
 <policymap>
-  <policy domain="Undefined" rights="none"/>
-  <!-- <policy domain="coder" rights="none" pattern="*"/> -->
-  <!-- <policy domain="module" rights="none" pattern="*"/> -->
-  <policy domain="module" rights="read | write" pattern="{GIF,PNG}"/>
-  <policy domain="module" rights="read | write" pattern="{MPC}" stealth="true"/>
+  <policy domain="Undefined" rights="none" />
+  <!-- <policy domain="coder" rights="none" pattern="*" /> -->
+  <!-- <policy domain="module" rights="none" pattern="*" /> -->
+  <!-- <policy domain="module" rights="read | write" pattern="{GIF,PNG}" />  -->
+  <!-- <policy domain="module" rights="read | write" pattern="{MPC}" stealth="true" /> -->
   <!-- Do not permit any delegates to execute. -->
-  <policy domain="delegate" rights="none" pattern="*"/>
+  <policy domain="delegate" rights="none" pattern="*" />
   <!-- Do not permit any image filters to load. -->
-  <policy domain="filter" rights="none" pattern="*"/>
+  <policy domain="filter" rights="none" pattern="*" />
   <!-- Don't read/write from/to stdin/stdout. -->
-  <policy domain="path" rights="none" pattern="-"/>
+  <policy domain="path" rights="none" pattern="-" />
   <!-- Indirect reads are not permitted. -->
-  <policy domain="path" rights="none" pattern="@*"/>
+  <policy domain="path" rights="none" pattern="@*" />
   <!-- only allow reads/writes under toplevel work directory -->
-  <!-- <policy domain="path" rights="none" pattern="*"/> -->
-  <!-- <policy domain="path" rights="read | write" pattern="/tmp/RGB_TOPLEVEL/*"/> -->
+  <!-- <policy domain="path" rights="none" pattern="*" /> -->
+  <!-- <policy domain="path" rights="read | write" pattern="/tmp/RGB_TOPLEVEL/*" /> -->
   <!-- Set maximum parallel threads. -->
-  <policy domain="resource" name="thread" value="24"/>
+  <policy domain="resource" name="thread" value="24" />
   <!-- Set maximum number of open pixel cache files. When this limit is exceeded, any subsequent pixels cached to disk are closed and reopened on demand. -->
-  <policy domain="resource" name="file" value="4096"/>
+  <policy domain="resource" name="file" value="4096" />
   <!-- Set the maximum length of an image sequence.  When this limit is exceeded, an exception is thrown. -->
-  <!-- <policy domain="resource" name="list-length" value="9999"/> -->
+  <!-- <policy domain="resource" name="list-length" value="9999" /> -->
   <!-- Set maximum amount of memory in bytes to allocate for the pixel cache from the heap. When this limit is exceeded, the image pixels are cached to memory-mapped disk. -->
-  <policy domain="resource" name="memory" value="32GB"/>
+  <policy domain="resource" name="memory" value="32GB" />
   <!-- Set maximum amount of memory map in bytes to allocate for the pixel cache. When this limit is exceeded, the image pixels are cached to disk. -->
-  <policy domain="resource" name="map" value="32GB"/>
+  <policy domain="resource" name="map" value="32GB" />
   <!-- Set maximum amount of disk space in bytes permitted for use by the pixel cache. When this limit is exceeded, the pixel cache is not be created and an exception is thrown. -->
-  <policy domain="resource" name="disk" value="32GB"/>
+  <policy domain="resource" name="disk" value="32GB" />
   <!-- Set the maximum width of an image.  When this limit is exceeded, an exception is thrown. -->
-  <policy domain="resource" name="width" value="32KP"/>
+  <policy domain="resource" name="width" value="32KP" />
   <!-- Set the maximum height of an image.  When this limit is exceeded, an exception is thrown. -->
-  <policy domain="resource" name="height" value="32KP"/>
+  <policy domain="resource" name="height" value="32KP" />
   <!-- Set the maximum width * height of an image that can reside in the pixel cache memory. Images that exceed the area limit are cached to disk. -->
-  <!-- <policy domain="resource" name="area" value="256MP"/> -->
+  <!-- <policy domain="resource" name="area" value="256MP" /> -->
 </policymap>

@@ -95,12 +95,17 @@ def SetupENV() -> dict:
     
     # MAGICK_DBG_SETTING: "None", "All", or comma-seperated domain list
     MAGICK_DBG_SETTING = os.getenv("MAGICK_DEBUG", "all").replace(" ","")
-    MAGICK_DBG_DOMAINS = [
+    MAGICK_DBG_DOMAINS = ([
         'annotate','blob','cache','coder','configure',
         'deprecate','error','exception','fatalerror',
         'information','locale','option','render','resource',
         'temporaryfile','transform','user','warning','x11',
-    ] # seems to be case-insensitive for GraphicsMagick
+      ] if (Globals.MAGICKLIBRARY == "GM") else [
+        'accelerate','annotate','blob','cache','coder',
+        'deprecate','configure','command','exception',
+        'locale','module','pixel','policy','resource',
+        'draw','trace','transform','user','wand','x11',
+    ])
     
     # GraphicsMagick simply ignores any invalid domains, without any warnings/errors
     print(f"parsing MAGICK_DEBUG[env]: '{MAGICK_DBG_SETTING}'")
