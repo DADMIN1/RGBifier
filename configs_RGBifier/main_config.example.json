@@ -1,0 +1,16 @@
+{
+  "NAME": "main_config.example",
+  "ENV_DEFAULTS": {
+    "MAGICK_DEBUG": "All",
+    "MAGICK_ACCESS_MONITOR": true
+  },
+  "CMDLINE_ARGS": [
+    "--tmpfs",
+    "--noclean"
+  ],
+  "DEBUG_FLAGS": [
+    "PRINT_CMDS",
+    "PRINT_ONLY",
+    "PRINT_GLOBALS"
+  ]
+}

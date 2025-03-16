@@ -1,4 +1,5 @@
 from pathlib import Path # just for type hints
+from tempfile import TemporaryDirectory # just for type hints
 
 # toplevel directory: contains 'WORKING_DIR'(s) and 'magicklogs'
 TOPLEVEL_NAME = "RGB_TOPLEVEL"
@@ -9,7 +10,15 @@ WORKING_DIR:Path|None = None
 SRCIMG_PATH:Path|None = None
 LOGGING_DIR:Path|None = None
 
-DEBUG_PRINT_GLOBALS = False # print variables during init and 'RGB.PrintGlobals()'
+# global reference to prevent tempdir from deleting itself instantly
+TEMPDIR_REF:TemporaryDirectory|None = None
+
+# these flags may be set by 'ApplyConfig' in 'Config.py'
+# once a flag has been set (True), 'ApplyConfig' will never disable it
+DEBUG_PRINT_CMDS:bool|None = None # print commands before passing to 'SubCommand'
+DEBUG_PRINT_ONLY:bool|None = None # exit after printing commands; do not execute
+DEBUG_PRINT_GLOBALS = None # print variables during init and 'RGB.PrintGlobals()'
+
 def UpdateGlobals(workdir:Path, srcimg:Path, logdir:Path, dbgprint: bool | None=None):
     """ specifying dbgprint here will also affect 'RGB.PrintGlobals()'\n
     'srcimg' must be located within 'workdir'
@@ -29,6 +38,9 @@ def UpdateGlobals(workdir:Path, srcimg:Path, logdir:Path, dbgprint: bool | None=
     
     if not dbgprint: return
     print(f"DEBUG_PRINT_GLOBALS: {DEBUG_PRINT_GLOBALS}")
+    print(f"DEBUG_PRINT_CMDS: {DEBUG_PRINT_CMDS}")
+    print(f"DEBUG_PRINT_ONLY: {DEBUG_PRINT_ONLY}")
+    print("")
     print(f"WORKING_DIR: {WORKING_DIR}")
     print(f"SRCIMG_PATH: {SRCIMG_PATH}")
     print(f"LOGGING_DIR: {LOGGING_DIR}")

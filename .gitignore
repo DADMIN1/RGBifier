@@ -2,9 +2,16 @@ __pycache__/
 .vscode/
 .idea/
 .venv/
+
 notes/
+working_on_it/
 Testing_Env.py
+
+# exclude real configs, include examples
+configs_RGBifier/*.json
+!configs_RGBifier/*.example.json
+
 *.png
 *.jpg
 *.gif
-
+*.mp4

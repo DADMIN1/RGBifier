@@ -20,15 +20,15 @@
   <!-- Set maximum parallel threads. -->
   <policy domain="resource" name="thread" value="24" />
   <!-- Set maximum number of open pixel cache files. When this limit is exceeded, any subsequent pixels cached to disk are closed and reopened on demand. -->
-  <policy domain="resource" name="file" value="4096" />
+  <policy domain="resource" name="file" value="8192" />
   <!-- Set the maximum length of an image sequence.  When this limit is exceeded, an exception is thrown. -->
   <!-- <policy domain="resource" name="list-length" value="9999" /> -->
   <!-- Set maximum amount of memory in bytes to allocate for the pixel cache from the heap. When this limit is exceeded, the image pixels are cached to memory-mapped disk. -->
-  <policy domain="resource" name="memory" value="32GB" />
+  <policy domain="resource" name="memory" value="64GB" />
   <!-- Set maximum amount of memory map in bytes to allocate for the pixel cache. When this limit is exceeded, the image pixels are cached to disk. -->
-  <policy domain="resource" name="map" value="32GB" />
+  <policy domain="resource" name="map" value="64GB" />
   <!-- Set maximum amount of disk space in bytes permitted for use by the pixel cache. When this limit is exceeded, the pixel cache is not be created and an exception is thrown. -->
-  <policy domain="resource" name="disk" value="32GB" />
+  <policy domain="resource" name="disk" value="64GB" />
   <!-- Set the maximum width of an image.  When this limit is exceeded, an exception is thrown. -->
   <policy domain="resource" name="width" value="32KP" />
   <!-- Set the maximum height of an image.  When this limit is exceeded, an exception is thrown. -->

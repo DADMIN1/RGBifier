@@ -8,13 +8,15 @@ from collections import Counter
 from datetime import datetime
 
 import Globals
+import Config
 import RGB
 
 
 # replaces nonbasic characters in text (for filename generation)
 def FilterText(text:str) -> str:
     if text.isalnum(): return text
-    bad_chars = {C for C in text if ((not C.isprintable()) or (not C.isalnum()) or C.isspace())}
+    ok_chars = {'_'}
+    bad_chars = {C for C in text if (C not in ok_chars) and ((not C.isprintable()) or (not C.isalnum()) or C.isspace())}
     for BC in bad_chars: text = text.replace(BC, "");
     return text
 
@@ -41,12 +43,25 @@ def ParseCmdline(arglist:list[str]|None = None) -> argparse.Namespace:
     # TODO: duration
     # TODO: resize (scale/crop)
     # TODO: output types (gif/mp4/script)
+    # TODO: OUTPUT PATH !!!!!!!!!!
     
-    parser.add_argument("input_path", type=pathlib.Path, metavar="IMAGE_FILE")
+    parsed_args = None; print("\nparsing args...")
+    if ((arglist is not None) and (len(arglist) > 0)):
+        print(f"additional args given: {arglist}")
+        parsed_args = parser.parse_args(arglist)
+        print(f"[parsed arglist]: {parsed_args}")
     
-    if arglist is None: parsed_args = parser.parse_args()
-    else: parsed_args = parser.parse_args(arglist)
+    # positional arguments must be added after initial arglist parse, otherwise it errors because they're required 
+    parser.add_argument("stepsize", type=float)
+    parser.add_argument("image_path", type=pathlib.Path, metavar="IMAGE")
+    
+    parsed_args = parser.parse_args(namespace=parsed_args)
+    print(f"[parsed cmdline]: {parsed_args}\n")
+    parsed_args.image_path = parsed_args.image_path.expanduser().resolve().absolute()
+    print(f"(expanded) image_path: '{parsed_args.image_path}'")
+    
     # assert(type(parsed_args.fps) is int)
+    assert(parsed_args.stepsize != 0), "stepsize must not be zero"
     
     Globals.MAGICKLIBRARY = parsed_args.magick
     
@@ -56,7 +71,7 @@ def ParseCmdline(arglist:list[str]|None = None) -> argparse.Namespace:
 
 
 
-def SetupENV() -> dict:
+def SetupENV(alt_defaults:dict) -> dict:
     """ Sets config/log path, and some resource limits (mostly higher than builtin defaults). \n
     Checks environment and imports any defined ImageMagick/GraphicsMagick variables. \n
     Performs validation for 'MAGICK_DEBUG' if defined externally, otherwise defaults to 'All'. \n 
@@ -70,11 +85,11 @@ def SetupENV() -> dict:
     # values specified here will be exported to env if not already defined, unless the value is 'None'
     env_defaults = {
         # resources
-          "FILES": 4096, # GraphicsMagick will automatically increase soft-ulimit if necessary (ulimit -S -n)
+          "FILES": 8192, # IM/GM will automatically increase soft-ulimit if necessary (ulimit -S -n)
         "THREADS": (os.cpu_count() // 2), # 'cpu_count()' reports 2 cpus per physical core (hyperthreading)
-         "MEMORY": "32GB", # TODO: should match tmpfs size
-            "MAP": "32GB", # normally 2x Memory-limit, for some reason
-           "DISK": "32GB", # setting this equal to 'Memory' is necessary for tmpfs: imagemagick seems to count loading '.mpc' files as disk usage
+         "MEMORY": "64GB", # TODO: should match tmpfs size
+            "MAP": "64GB", # normally 2x Memory-limit, for some reason
+           "DISK": "64GB", # setting this equal to 'Memory' is necessary for tmpfs: imagemagick seems to count loading '.mpc' files as disk usage
           "WIDTH": "32KP", # width/height are hard limits (throws exception if exceeded)
          "HEIGHT": "32KP",
          "PIXELS": None, # GM-only?
@@ -94,7 +109,7 @@ def SetupENV() -> dict:
     }
     
     # MAGICK_DBG_SETTING: "None", "All", or comma-seperated domain list
-    MAGICK_DBG_SETTING = os.getenv("MAGICK_DEBUG", "all").replace(" ","")
+    MAGICK_DBG_SETTING = os.getenv("MAGICK_DEBUG", alt_defaults.get("MAGICK_DEBUG", "None")).replace(" ", "")
     MAGICK_DBG_DOMAINS = ([
         'annotate','blob','cache','coder','configure',
         'deprecate','error','exception','fatalerror',
@@ -152,7 +167,7 @@ def SetupENV() -> dict:
     else: print(f"[WARNING] bad path for 'MAGICK_CONFIGURE_PATH': {config_dir}");
     
     # adds info about file-access to '-monitor' output (including temporary files); "TRUE"/"FALSE"
-    final_env["MAGICK_ACCESS_MONITOR"] = str(os.getenv("MAGICK_ACCESS_MONITOR", True)).upper()
+    final_env["MAGICK_ACCESS_MONITOR"] = str(os.getenv("MAGICK_ACCESS_MONITOR", alt_defaults.get("MAGICK_ACCESS_MONITOR", False))).upper()
     
     print("updating magick environment variables...\n")
     PrintDict(env_defaults, name="defaults")
@@ -233,10 +248,11 @@ def CreateTempdir(checksum:str, autodelete=True, use_tmpfs=False) -> tuple[pathl
         
         mtime_str = f"Last-Modified: {tmpdir_mtime.date().isoformat()} ({relative_time_str})"
         print(f"{tempdir.name}: [ {filecount} files | {dircount} folders ][ {mtime_str} ]")
+        Globals.TEMPDIR_REF = tempdir
         return (tempdir, isReusingSubdir)
     
     # per-process tempdir - optionally autodeleted when the program exits
-    tempdir = tempfile.TemporaryDirectory(
+    tempdir = Globals.TEMPDIR_REF = tempfile.TemporaryDirectory(
         prefix=tmpdir_prefix, suffix=tmpdir_suffix, dir=tempdir_toplevel,
         delete=autodelete, ignore_cleanup_errors=False
     )
@@ -307,7 +323,7 @@ def MakeImageSources(workdir:pathlib.Path, input_file:pathlib.Path) -> tuple[pat
     
     # 'safe' filename makes it possible to parse output of 'identify'/'file' (otherwise splitting won't work if filename contained spaces)
     safe_filename = FilterText(str(input_file.stem))
-    print(f"\ninput_path: '{input_file}'")
+    print(f"\nimage_path: '{input_file}'")
     print(f"safe filename: '{safe_filename}'\n")
     
     # baseimg: copy of unmodified original
@@ -338,7 +354,7 @@ def MakeImageSources(workdir:pathlib.Path, input_file:pathlib.Path) -> tuple[pat
     return (baseimg_path, srcimg_path)
 
 
-def SubCommand(cmdline:list[str]|str, logname:str = "main", isCmdSequence:bool = False):
+def SubCommand(cmdline:list[str]|str, logname:str|None = "main", isCmdSequence:bool = False):
     """ Run a command in subprocess and log output. Logs are appended to or created automatically.
     :param cmdline: string or args-list (including command itself)
     :param logname: identifier used in filename. Skip logging if None.
@@ -351,10 +367,10 @@ def SubCommand(cmdline:list[str]|str, logname:str = "main", isCmdSequence:bool =
     if not log_dir.exists(): print(f"creating log_dir: '{log_dir}'"); log_dir.mkdir();
     
     # TODO: Skip logging if None
-    if logname is None: print("skipping logging")
-    
+    skiplog = (logname is None)
     log_filepath = log_dir / f"magickrgb_{logname}.log"
-    print(f"logging to: '{log_filepath}'")
+    if logname is None: print("skipping logging"); log_filepath = log_dir/"magickrgb_main.log"; # still logs command, but not output
+    else:  print(f"logging to: '{log_filepath}'");
     print('_'*120); print()
     
     # shell=True if cmdline is a single string
@@ -372,7 +388,7 @@ def SubCommand(cmdline:list[str]|str, logname:str = "main", isCmdSequence:bool =
         logfile.write(cmdline_str); logfile.write("\n\n"); logfile.flush()
         cmd_seq = (cmdline if isCmdSequence else [cmdline])
         for cmd in cmd_seq:
-            completed = subprocess.run(cmd, stdout=None, stderr=logfile, encoding="utf-8", shell=(type(cmd) is str)) # prints stdout, logs stderr
+            completed = subprocess.run(cmd, stdout=None, stderr=(logfile if not skiplog else None), encoding="utf-8", shell=(type(cmd) is str)) # prints stdout, logs stderr
         if (completed.returncode != 0): print(f"[ERROR] nonzero exit-status: {completed.returncode}\n");
         logfile.write('_'*120); logfile.write("\n\n")
     
@@ -381,56 +397,77 @@ def SubCommand(cmdline:list[str]|str, logname:str = "main", isCmdSequence:bool =
 
 
 if __name__ == "__main__":
-    # args = ParseCmdline()
-    # args = ParseCmdline(["--magick=IM", "--tmpfs", "--noclean", "TestImage.png"])
-    args = ParseCmdline(["--tmpfs", "--noclean", "TestImage.png"])
-    env_vars = SetupENV()
+    (conf_cmdline_args, conf_env_defaults) = Config.Init()
+    args = ParseCmdline(conf_cmdline_args)
+    env_vars = SetupENV(conf_env_defaults)
     
-    if not args.input_path.exists():
-        print(f"[ERROR] input-file: '{args.input_path}' does not exist")
+    if not args.image_path.exists():
+        print(f"[ERROR] input-file: '{args.image_path}' does not exist")
         exit(1)
     
-    md5sum_output = subprocess.check_output(["md5sum", str(args.input_path)])
+    md5sum_output = subprocess.check_output(["md5sum", str(args.image_path)])
     checksum = str(md5sum_output, encoding="utf-8").split()[0]
     assert(len(checksum) == 32), "MD5-hash did not match expected length"
     
     (workdir, wasNewlyCreated) = CreateTempdir(checksum, autodelete=args.autodelete, use_tmpfs=args.use_tmpfs)
     if(workdir is None): print(f"no workdir. exiting"); exit(2); # tmpfs mount attempted and failed
+    assert(Globals.TEMPDIR_REF is not None)
+    if(not workdir.exists()): print("workdir does not exist!!!!"); os.sync();
+    if(not workdir.exists()): print("workdir does not exist!!!!"); exit(4)
     
     log_directory = RotateMagickLogs(workdir.parent)
-    (baseimg,srcimg) = MakeImageSources(workdir, args.input_path)
+    (baseimg,srcimg) = MakeImageSources(workdir, args.image_path)
     Globals.UpdateGlobals(workdir, srcimg, log_directory) # dbgprint=True
     RGB.PrintGlobals() # no-op unless DEBUG_PRINT_GLOBALS / dbgprint
     
-    print(baseimg); print(srcimg)#; print(f"\n{'_'*120}\n")
-    SubCommand(f"{('gm convert -list resources' if (Globals.MAGICKLIBRARY=="GM") else 'identify -list resource')}", "resources")
-    SubCommand(f"{('gm ' if (Globals.MAGICKLIBRARY=="GM") else '')}identify -verbose {str(srcimg)}", "identify")
+    print(baseimg); print(srcimg); print(f"\n{'_'*120}\n")
+    SubCommand(f"{('gm convert -list resources' if (Globals.MAGICKLIBRARY=="GM") else 'identify -list resource')}", logname=None)
+    SubCommand(f"{('gm ' if (Globals.MAGICKLIBRARY=="GM") else '')}identify -verbose {str(srcimg)}", logname=None)
     
-    #RGB.SaveCommand("str_test", "command is a string")
-    #RGB.SaveCommand("cmd_test", ["list", "of", "commands"])
-    #RGB.SaveCommand("append_test", "first line written in new file!!!", append=True)
-    #RGB.SaveCommand("append_test", ["second", "save", "command!!!"], append=True)
+    output_filename = f"{Globals.SRCIMG_PATH.with_suffix('').name}_RGB".removeprefix('srcimg_')
+    # not using 'args.image_path' because that filename might be unsafe.
+    print(f"output_filename: {output_filename}")
+    print(f"original directory: {args.image_path.parent.absolute()}")
+    print(f"{(args.image_path.parent / output_filename).absolute()}")
+    final_destination = pathlib.Path(args.image_path.parent / output_filename).with_suffix('.mp4')
     
-    DEBUG_PRINT_CMDS = False # print commands before passing to 'SubCommand'
-    DEBUG_PRINT_ONLY = False # exit after printing commands; do not execute
-    DEBUG_PRINT_CMDS = (DEBUG_PRINT_ONLY or DEBUG_PRINT_CMDS) # auto-enable when 'PRINT_ONLY' is True
+    renamelimit = 10; renamecount=1
+    while(final_destination.exists() and (renamecount < renamelimit)):
+        print(f"[WARNING] final output already exists: '{final_destination.absolute()}'")
+        output_filename = f"{final_destination.with_suffix('').name.removesuffix(f'_{renamecount-1}')}_{renamecount}"
+        final_destination = (final_destination.parent / output_filename).with_suffix(final_destination.suffix)
+        print(f"    renaming: '{final_destination.absolute()}'")
+        renamecount += 1
+    if renamecount >= renamelimit: print(f"hit rename limit. exiting."); exit(3);
+    assert(final_destination.parent.exists());
+    assert(final_destination.parent.absolute() == args.image_path.parent.absolute());
+    print(f"final destination: '{final_destination.absolute()}'\n\n")
     
-    #(cmdlist, batchfile) = RGB.GenerateCommands(10, writeMPC=True, writePNG=True, writeBatchfile=False)
-    (cmdlist, batchfile) = RGB.GenerateCommands(10)
+    #TODO: refactor this
+    debug_print_cmds = Globals.DEBUG_PRINT_CMDS # print commands before passing to 'SubCommand'
+    debug_print_only = Globals.DEBUG_PRINT_ONLY # exit after printing commands; do not execute
+    debug_print_cmds = (debug_print_only or debug_print_cmds) # auto-enable when 'PRINT_ONLY' is True
+    
+    (cmdlist, batchfile) = RGB.GenerateCommands(args.stepsize, writeMPC=False, writePNG=True, writeBatchfile=True, output_name=output_filename)
     if (batchfile is not None):
         (batch_cmd, rendercmd) = cmdlist
-        if(DEBUG_PRINT_CMDS): print('\n'); print(batch_cmd); print(rendercmd);
-        if(DEBUG_PRINT_ONLY): print("[DEBUG_PRINT_ONLY] early exit"); exit(0);
+        if(debug_print_cmds): print('\n'); print(batch_cmd); print(rendercmd);
+        if(debug_print_only): print("[DEBUG_PRINT_ONLY] early exit"); exit(0);
         SubCommand(batch_cmd, "frame_gen")
         SubCommand(rendercmd, "rendering")
     else:
         framegen_cmds = cmdlist[1:-1]; rendercmd = cmdlist[-1]
-        if (DEBUG_PRINT_CMDS):
+        if (debug_print_cmds):
             print('\n'); print(cmdlist[0]) # cache_srcimg cmd
             print('\n'.join(framegen_cmds)); print(rendercmd)
-        if (DEBUG_PRINT_ONLY): print("[DEBUG_PRINT_ONLY] early exit"); exit(0);
+        if (debug_print_only): print("[DEBUG_PRINT_ONLY] early exit"); exit(0);
         SubCommand(cmdlist[0], "cache_srcimg")
         SubCommand(framegen_cmds, "frame_gen", isCmdSequence=True)
         SubCommand(rendercmd, "rendering")
+    
+    # TODO: implement expected-output properly
+    expected_output = (workdir/output_filename).absolute().with_suffix('.mp4'); os.sync()
+    if not expected_output.exists(): print(f"[ERROR] expected output does not exist! ({expected_output})"); exit(4);
+    SubCommand(f"cp --verbose --update=none '{expected_output}' '{final_destination.absolute()}'", logname=None)
     
     print("\ndone\n")

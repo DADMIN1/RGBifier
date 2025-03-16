@@ -1,3 +1,4 @@
+from math import log10
 import pathlib
 import Globals
 
@@ -75,7 +76,7 @@ def SaveCommand(filename: str, command:str|list[str], append:bool=False) -> path
     return cmdfile
 
 
-def GenerateCommands(stepsize:float, writeMPC:bool=True, writePNG:bool=False, writeBatchfile:bool=True):
+def GenerateCommands(stepsize:float, writeMPC:bool=True, writePNG:bool=False, writeBatchfile:bool=True, output_name:str|None=None):
     workdir = Globals.WORKING_DIR; assert(workdir.exists() and workdir.is_dir())
     assert(workdir.parent.name == Globals.TOPLEVEL_NAME), f"working directory expected to be under '{Globals.TOPLEVEL_NAME}'";
     assert(Globals.SRCIMG_PATH.is_relative_to(Globals.WORKING_DIR)), f"srcimg expected to be under '{Globals.TOPLEVEL_NAME}'";
@@ -106,30 +107,35 @@ def GenerateCommands(stepsize:float, writeMPC:bool=True, writePNG:bool=False, wr
         framegen_dir[frameformat] = frames_directory
     
     rotation_strs = HueRotations(stepsize)
+    padding = 1 + int(log10(len(rotation_strs)))
+    enumRotations = [
+        (str(index).zfill(padding), rotation)
+        for (index, rotation) in enumerate(rotation_strs)
+    ]
     
     if (writeMPC or writePNG):
         frameformat = frameformats[0]
         frames_directory = framegen_dir[frameformat]
         framegen_cmd[frameformat] = [
-            magick_convert+" '{0}' -modulate 100,100,{1} '{2}'".format(
+            magick_convert+" '{0}' -scene {1} -modulate 100,100,{2} '{3}'".format(
                 cache_srcimg_path,
-                hue_rotation,
-                f"{frames_directory}/{hue_rotation}.{frameformat.lower()}"
-            ) for hue_rotation in rotation_strs
+                index, hue_rotation,
+                f"{frames_directory}/frame{index}_{hue_rotation}.{frameformat.lower()}"
+            ) for (index, hue_rotation) in enumRotations
         ]
         cmdlist.extend(framegen_cmd[frameformat])
     
     # if both formats are enabled, simply convert MPC to PNG (instead of modulating twice)
     if (writeMPC and writePNG):
-        assert(framegen_cmd['MPC'] is not None), "framegen_cmd 'MPC' should have already been written! (always first format)"  
+        assert(framegen_cmd['MPC'] is not None), "framegen_cmd 'MPC' should have already been written! (always first frameformat)"
         if (Globals.MAGICKLIBRARY == "IM"): # ImageMagick-mogrify can perform PNG conversion in a single command 
-            convert_frames_PNG = [f"{magick_mogrify} -format png -path '{framegen_dir['PNG']}' '{framegen_dir['MPC']}/*.mpc'"]
+            convert_frames_PNG = [f"{magick_mogrify} -format png -path '{framegen_dir['PNG']}' '{framegen_dir['MPC']}/frame*.mpc'"]
         else: # GraphicsMagick-mogrify creates a retarded directory structure ('-output-directory' always appends absolute-path of inputs); generate 'convert' command-list instead
             convert_frames_PNG = [
                 magick_convert+" '{0}' '{1}'".format(
-                    f"{framegen_dir['MPC']}/{hue_rotation}.mpc",
-                    f"{framegen_dir['PNG']}/{hue_rotation}.png"
-                ) for hue_rotation in rotation_strs
+                    f"{framegen_dir['MPC']}/frame{index}_{hue_rotation}.mpc",
+                    f"{framegen_dir['PNG']}/frame{index}_{hue_rotation}.png"
+                ) for (index, hue_rotation) in enumRotations
             ]
         framegen_cmd['PNG'] = convert_frames_PNG
         cmdlist.extend(convert_frames_PNG)
@@ -149,15 +155,22 @@ def GenerateCommands(stepsize:float, writeMPC:bool=True, writePNG:bool=False, wr
     # 'fuzz' and 'treedepth' options have no effect (IM and GM), regardless of value and remap/morph options. (output has identical checksum)
     remap_arg = ("+remap" if (Globals.MAGICKLIBRARY == "IM") else "") # IM-only; GM does not recognize 'remap'
     use_morph = False; morph_arg = ("-morph 10" if use_morph else "")
+    def_delay = False; delay_arg = (f"-delay {int(stepsize)}" if def_delay else "")
+    disposing = "-dispose None" # "Undefined | Background | Previous"
+    GIFargstr = f"{morph_arg} {delay_arg} {disposing} {remap_arg}".strip()
     
     # imagemagick creates a gigantic multi-gigabyte log if '-verbose' and '-monitor' are enabled
     convert_cmd = ("gm convert -verbose -monitor" if (Globals.MAGICKLIBRARY=="GM") else magick_convert)
-    output_filename = f"{Globals.SRCIMG_PATH.with_suffix('').name}_RGB.gif".removeprefix('srcimg_')
+    output_name = (output_name.removesuffix('.mp4') if output_name else f"{Globals.SRCIMG_PATH.with_suffix('').name}_RGB".removeprefix('srcimg_')) 
     frameformat = frameformats[0].lower(); frames_directory = framegen_dir[frameformat.upper()] # uses "MPC" unless "PNG" is only format
-    createGIF = f"{convert_cmd} '{frames_directory}/*.{frameformat}' {morph_arg} {remap_arg} '{workdir/output_filename}'"
-    cmdlist.append(createGIF)
+    createGIF = f"{convert_cmd} '{frames_directory}/frame*.{frameformat}' {GIFargstr} '{workdir/output_name}.gif'"
+    createMP4 = f"ffmpeg -y -f image2 -framerate 60 -pattern_type glob -i '{framegen_dir["PNG"]}/frame*.png' '{workdir/output_name}.mp4'"
+    # '-y' overwrites output without asking
+    # '-pattern_type glob' is 'image2'-specific. ffmpeg filename format (both in/out) is normally like: 'asdf-%03d.jpeg'
+    # cmdlist.append(createGIF)
+    cmdlist.append(createMP4)
     
-    if writeBatchfile: return ([batch_cmd, createGIF], batchfile);
+    if writeBatchfile: return ([batch_cmd, createMP4], batchfile);
     return (cmdlist, None)
 
 
