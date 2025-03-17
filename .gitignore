@@ -15,3 +15,5 @@ configs_RGBifier/*.json
 *.jpg
 *.gif
 *.mp4
+
+!readme_assets/*
