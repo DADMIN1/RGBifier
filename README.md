@@ -1,9 +1,9 @@
 RBGifier
 --------
 
-| your image                                   | RGBified                                             |
-|----------------------------------------------|------------------------------------------------------|
-| ![colorchart](/readme_assets/colorchart.png) | ![colorchart_RGB](/readme_assets/colorchart_RGB.mp4) |
+| your image                                    | RGBified                                      |
+|-----------------------------------------------|-----------------------------------------------|
+| !["your image"](readme_assets/colorchart.png) | !["RGBified"](readme_assets/rgb_scale75.webp) |
 
 
 ### usage
@@ -17,6 +17,6 @@ See the [example config](/configs_RGBifier/main_config.example.json) for keys/va
 
 
 ### prerequisites
-requires [ImageMagick]() and/or [GraphicsMagick]() (select with '--magick' arg) \
+requires [ImageMagick](https://github.com/ImageMagick/ImageMagick6) and/or [GraphicsMagick](http://www.GraphicsMagick.org/) (select with '--magick' arg) \
 MP4 output requires ffmpeg
 
