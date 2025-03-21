@@ -1,6 +1,7 @@
 import pathlib
 import argparse
 import tempfile
+import textwrap
 import subprocess
 import os
 
@@ -27,23 +28,44 @@ def PrintDict(D:dict, name=None):
     if name is not None: print("}\n")
 
 
-# TODO: add parsing/env for which magick library (imagemagick/graphicsmagick) to use
-# maybe add a switch for imagemagick 6/7 compat?
+# custom formatter_class combining the behavior of two arparse formatters
+# allows newlines within help-text and automatically appends info about default value
+class CustomFormatter(argparse.RawTextHelpFormatter, argparse.ArgumentDefaultsHelpFormatter):
+    def __init__(self, prog): super().__init__(prog, indent_increment=2, width=120);
 
 
 def ParseCmdline(arglist:list[str]|None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser()
-    #TODO: group args
+    parser = argparse.ArgumentParser(
+        prog="RGBifier", allow_abbrev=False,
+        formatter_class=CustomFormatter
+    )
+    #TODO: description and epilog
     
-    parser.add_argument("--magick", choices=["IM","GM"], default="GM")
-    parser.add_argument("--tmpfs", dest="use_tmpfs", action="store_true", default=False, help="ensure all temp-files are created on a tmpfs; arg is size of tmpfs")
-    parser.add_argument("--noclean", dest="autodelete", action="store_false", default=True, help="preserve temp files (deleted by default)")
+    group_system = parser.add_argument_group("system options")
+    group_primary = parser.add_argument_group("primary arguments")
+    grp_transform = parser.add_argument_group("transform options")
+    
+    group_system.add_argument("--magick", nargs=1, choices=["IM","GM"], default="GM", help="select magick library (ImageMagick / GraphicsMagick)")
+    group_system.add_argument("--tmpfs", dest="use_tmpfs", action="store_true", default=False, help="ensure all temp-files are created on a tmpfs; arg is size of tmpfs")
+    #group_system.add_argument("--autodelete", dest="autodelete", action="store_true", default=True, help="wipe the (temp) working directory after processing")
+    group_system.add_argument("--noclean", dest="autodelete", action="store_false", help="preserve temp files (deleted by default - ignore the following 'default' message)")
+    # TODO: fix the display of '--noclean'/autodelete's default message
     
     # parser.add_argument("--fps", dest="fps", type=int, default=60, help="FPS of RGB-ified video (default 60)")
-    # TODO: duration
-    # TODO: resize (scale/crop)
-    # TODO: output types (gif/mp4/script)
-    # TODO: OUTPUT PATH !!!!!!!!!!
+    # TODO: duration/fps/numloops/reverse
+    # TODO: add 'script' output option
+    
+    scale_help = textwrap.dedent("""\
+        suffix: '%%' denotes percentage-scaling (integer)
+        suffix: 'x' denotes multiplier-scaling (float)
+        Outputs will be generated at each scale specified, instead of normal size
+        include '100%%' or '1x' to also produce full-size output."""
+    )
+    
+    # TODO: implement transforms
+    grp_transform.add_argument("--crop", nargs=1, metavar="WxH[+X][+Y]", help="crop the image to 'WxH', with (optional) offset 'X,Y'")
+    grp_transform.add_argument("--scale", nargs=1, dest="scales", action="extend", metavar="{int[%]|float[x]}")
+    grp_transform.add_argument("--scales", nargs='+', action="extend", default=[], metavar="{int[%]|float[x]}", help=scale_help)
     
     parsed_args = None; print("\nparsing args...")
     if ((arglist is not None) and (len(arglist) > 0)):
@@ -51,17 +73,42 @@ def ParseCmdline(arglist:list[str]|None = None) -> argparse.Namespace:
         parsed_args = parser.parse_args(arglist)
         print(f"[parsed arglist]: {parsed_args}")
     
+    # TODO: use 'parse_known_args' and 'parse_intermixed_args' for this behavior
     # positional arguments must be added after initial arglist parse, otherwise it errors because they're required 
-    parser.add_argument("stepsize", type=float)
-    parser.add_argument("image_path", type=pathlib.Path, metavar="IMAGE")
+    group_primary.add_argument("image_path", type=pathlib.Path, metavar="IMAGE")
+    group_primary.add_argument("output_dir", type=pathlib.Path, metavar="DIRECTORY", nargs='?', help="output location - same as input by default")
+    group_primary.add_argument("--stepsize", type=float, default=1.00, metavar='(float)')
+    # TODO: implement output-directory logic
+    
+    # TODO: implement WebP/APNG generation
+    base_format_names = ("GIF", "WEBP", "MP4", "APNG", "ALL")
+    valid_fileformats = [*base_format_names]
+    # allow file-formats to be specified in lowercase and/or with leading '.'
+    valid_fileformats.extend([FMT.lower() for FMT in valid_fileformats])
+    valid_fileformats.extend([f".{FMT}" for FMT in valid_fileformats])
+    
+    # TODO: implement generation of multiple types
+    group_primary.add_argument("--filetype", dest="fileformats", metavar="type",
+        choices=valid_fileformats, nargs='+', action='append', default=["GIF"],
+        help=f"list of output formats: {base_format_names}.\nlowercase or leading '.' are also accepted."
+    )
     
     parsed_args = parser.parse_args(namespace=parsed_args)
     print(f"[parsed cmdline]: {parsed_args}\n")
+    
     parsed_args.image_path = parsed_args.image_path.expanduser().resolve().absolute()
     print(f"(expanded) image_path: '{parsed_args.image_path}'")
     
+    # any args will be in a list appended to default, so just use that list if it exists 
+    if (len(parsed_args.fileformats) > 1): parsed_args.fileformats = parsed_args.fileformats[1];
+    parsed_args.fileformats = [*set(fmt.lower().removeprefix('.') for fmt in parsed_args.fileformats)]
+    if ("all" in parsed_args.fileformats): parsed_args.fileformats = [fmt.lower() for fmt in base_format_names[:4]]
+    print(f"selected output-filetypes: {parsed_args.fileformats}")
+    
     # assert(type(parsed_args.fps) is int)
     assert(parsed_args.stepsize != 0), "stepsize must not be zero"
+    assert(len(parsed_args.fileformats) > 0), "missing output format"
+    assert(all([(fmt in valid_fileformats) for fmt in parsed_args.fileformats])), "invalid format after processing cmdline"
     
     Globals.MAGICKLIBRARY = parsed_args.magick
     
@@ -398,7 +445,7 @@ def SubCommand(cmdline:list[str]|str, logname:str|None = "main", isCmdSequence:b
 
 if __name__ == "__main__":
     (conf_cmdline_args, conf_env_defaults) = Config.Init()
-    args = ParseCmdline(conf_cmdline_args)
+    args = ParseCmdline(conf_cmdline_args)#; exit(0);
     env_vars = SetupENV(conf_env_defaults)
     
     if not args.image_path.exists():
@@ -429,7 +476,9 @@ if __name__ == "__main__":
     print(f"output_filename: {output_filename}")
     print(f"original directory: {args.image_path.parent.absolute()}")
     print(f"{(args.image_path.parent / output_filename).absolute()}")
-    final_destination = pathlib.Path(args.image_path.parent / output_filename).with_suffix('.mp4')
+    
+    outSuffix = f".{args.fileformats[-1]}" # .mp4/.gif
+    final_destination = pathlib.Path(args.image_path.parent / output_filename).with_suffix(outSuffix)
     
     renamelimit = 10; renamecount=1
     while(final_destination.exists() and (renamecount < renamelimit)):
@@ -448,26 +497,26 @@ if __name__ == "__main__":
     debug_print_only = Globals.DEBUG_PRINT_ONLY # exit after printing commands; do not execute
     debug_print_cmds = (debug_print_only or debug_print_cmds) # auto-enable when 'PRINT_ONLY' is True
     
-    (cmdlist, batchfile) = RGB.GenerateCommands(args.stepsize, writeMPC=False, writePNG=True, writeBatchfile=True, output_name=output_filename)
-    if (batchfile is not None):
-        (batch_cmd, rendercmd) = cmdlist
+    (cmdlist, batch_cmd, (renderGIF, renderMP4)) = RGB.GenerateCommands(args.stepsize, writeMPC=False, writePNG=True, writeBatchfile=True, output_name=output_filename)
+    rendercmd = (renderGIF if (outSuffix == '.gif') else renderMP4)
+    if (batch_cmd is not None):
         if(debug_print_cmds): print('\n'); print(batch_cmd); print(rendercmd);
         if(debug_print_only): print("[DEBUG_PRINT_ONLY] early exit"); exit(0);
         SubCommand(batch_cmd, "frame_gen")
         SubCommand(rendercmd, "rendering")
     else:
-        framegen_cmds = cmdlist[1:-1]; rendercmd = cmdlist[-1]
+        preprocess = cmdlist[0]; frame_gen = cmdlist[1:]
         if (debug_print_cmds):
-            print('\n'); print(cmdlist[0]) # cache_srcimg cmd
-            print('\n'.join(framegen_cmds)); print(rendercmd)
+            print('\n'); print(preprocess) # cache_srcimg cmd
+            print('\n'.join(frame_gen)); print(rendercmd)
         if (debug_print_only): print("[DEBUG_PRINT_ONLY] early exit"); exit(0);
-        SubCommand(cmdlist[0], "cache_srcimg")
-        SubCommand(framegen_cmds, "frame_gen", isCmdSequence=True)
+        SubCommand(preprocess, "preprocess_srcimg")
+        SubCommand(frame_gen, "frame_gen", isCmdSequence=True)
         SubCommand(rendercmd, "rendering")
     
     # TODO: implement expected-output properly
-    expected_output = (workdir/output_filename).absolute().with_suffix('.mp4'); os.sync()
-    if not expected_output.exists(): print(f"[ERROR] expected output does not exist! ({expected_output})"); exit(4);
-    SubCommand(f"cp --verbose --update=none '{expected_output}' '{final_destination.absolute()}'", logname=None)
+    expected_output = (workdir/output_filename).absolute().with_suffix(outSuffix)
+    if not (success := expected_output.exists()): print(f"[WARNING] expected output does not exist! ({expected_output})"); os.sync();
+    if success: SubCommand(f"cp --verbose --update=none '{expected_output}' '{final_destination.absolute()}'", logname=None)
     
     print("\ndone\n")

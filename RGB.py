@@ -140,7 +140,6 @@ def GenerateCommands(stepsize:float, writeMPC:bool=True, writePNG:bool=False, wr
         framegen_cmd['PNG'] = convert_frames_PNG
         cmdlist.extend(convert_frames_PNG)
     
-    batchfile = None
     batch_cmd = None
     if writeBatchfile:
         batchfile = SaveCommand("generate_frames", cache_srcimg_cmd)
@@ -161,17 +160,14 @@ def GenerateCommands(stepsize:float, writeMPC:bool=True, writePNG:bool=False, wr
     
     # imagemagick creates a gigantic multi-gigabyte log if '-verbose' and '-monitor' are enabled
     convert_cmd = ("gm convert -verbose -monitor" if (Globals.MAGICKLIBRARY=="GM") else magick_convert)
-    output_name = (output_name.removesuffix('.mp4') if output_name else f"{Globals.SRCIMG_PATH.with_suffix('').name}_RGB".removeprefix('srcimg_')) 
+    output_name = (output_name if output_name else f"{Globals.SRCIMG_PATH.with_suffix('').name}_RGB".removeprefix('srcimg_')) 
     frameformat = frameformats[0].lower(); frames_directory = framegen_dir[frameformat.upper()] # uses "MPC" unless "PNG" is only format
     createGIF = f"{convert_cmd} '{frames_directory}/frame*.{frameformat}' {GIFargstr} '{workdir/output_name}.gif'"
     createMP4 = f"ffmpeg -y -f image2 -framerate 60 -pattern_type glob -i '{framegen_dir["PNG"]}/frame*.png' '{workdir/output_name}.mp4'"
     # '-y' overwrites output without asking
     # '-pattern_type glob' is 'image2'-specific. ffmpeg filename format (both in/out) is normally like: 'asdf-%03d.jpeg'
-    # cmdlist.append(createGIF)
-    cmdlist.append(createMP4)
     
-    if writeBatchfile: return ([batch_cmd, createMP4], batchfile);
-    return (cmdlist, None)
+    return (cmdlist, batch_cmd, (createGIF, createMP4))
 
 
 # TODO: ffmpeg mp4, graphicsmagick MPEG (.mpg) output? APNG?
