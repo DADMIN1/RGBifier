@@ -17,6 +17,8 @@
   <!-- only allow reads/writes under toplevel work directory -->
   <!-- <policy domain="path" rights="none" pattern="*" /> -->
   <!-- <policy domain="path" rights="read | write" pattern="/tmp/RGB_TOPLEVEL/*" /> -->
+  <!-- ImageMagick temporary files will be stored at this location -->
+  <policy domain="resource" name="temporary-path" value="/tmp/RGB_TOPLEVEL/TEMP_IM/"/>
   <!-- Set maximum parallel threads. -->
   <policy domain="resource" name="thread" value="24" />
   <!-- Set maximum number of open pixel cache files. When this limit is exceeded, any subsequent pixels cached to disk are closed and reopened on demand. -->
