@@ -10,6 +10,7 @@ from datetime import datetime
 
 import Globals
 import Config
+import Task
 import RGB
 
 
@@ -468,7 +469,7 @@ def SubCommand(cmdline:list[str]|str, logname:str|None = "main", isCmdSequence:b
     return completed.returncode
 
 
-if __name__ == "__main__":
+def Main():
     (conf_cmdline_args, conf_env_defaults) = Config.Init()
     args = ParseCmdline(conf_cmdline_args)
     env_vars = SetupENV(conf_env_defaults)
@@ -477,8 +478,8 @@ if __name__ == "__main__":
         print(f"[ERROR] input-file: '{args.image_path}' does not exist")
         exit(1)
     
-    md5sum_output = subprocess.check_output(["md5sum", str(args.image_path)])
-    checksum = str(md5sum_output, encoding="utf-8").split()[0]
+    image_md5sum = subprocess.check_output(["md5sum", str(args.image_path)])
+    checksum = str(image_md5sum, encoding="utf-8").split()[0]
     assert(len(checksum) == 32), "MD5-hash did not match expected length"
     
     (workdir, wasNewlyCreated) = CreateTempdir(checksum, autodelete=args.autodelete, use_tmpfs=args.use_tmpfs)
@@ -502,20 +503,9 @@ if __name__ == "__main__":
     print(f"original directory: {args.image_path.parent.absolute()}")
     print(f"final: {(args.output_dir / output_filename).absolute()}")
     
-    outSuffix = f".{args.fileformats[-1]}" # .mp4/.gif
-    final_destination = pathlib.Path(args.output_dir / output_filename).with_suffix(outSuffix)
-    
-    renamelimit = 10; renamecount=1
-    while(final_destination.exists() and (renamecount < renamelimit)):
-        print(f"[WARNING] final output already exists: '{final_destination.absolute()}'")
-        output_filename = f"{final_destination.with_suffix('').name.removesuffix(f'_{renamecount-1}')}_{renamecount}"
-        final_destination = (final_destination.parent / output_filename).with_suffix(final_destination.suffix)
-        print(f"    renaming: '{final_destination.absolute()}'")
-        renamecount += 1
-    if renamecount >= renamelimit: print(f"hit rename limit. exiting."); exit(3);
-    assert(final_destination.parent.exists());
-    assert(final_destination.parent.absolute() == args.output_dir.absolute());
-    print(f"final destination: '{final_destination.absolute()}'\n\n")
+    task = Task.TaskT(checksum, output_filename, args.crop, args.scales, args.output_dir, args.fileformats)
+    expected_outputs = Task.FillExpectedOutputs(task)
+    assert(len(expected_outputs) > 0), "no expected outputs"
     
     #TODO: refactor this
     debug_print_cmds = Globals.DEBUG_PRINT_CMDS # print commands before passing to 'SubCommand'
@@ -523,7 +513,7 @@ if __name__ == "__main__":
     debug_print_cmds = (debug_print_only or debug_print_cmds) # auto-enable when 'PRINT_ONLY' is True
     
     (cmdlist, batch_cmd, (renderGIF, renderMP4)) = RGB.GenerateCommands(args.stepsize, writeMPC=False, writePNG=True, writeBatchfile=True, output_name=output_filename)
-    rendercmd = (renderGIF if (outSuffix == '.gif') else renderMP4)
+    rendercmd = (renderGIF if ('gif' in args.fileformats) else renderMP4)
     if (batch_cmd is not None):
         if(debug_print_cmds): print('\n'); print(batch_cmd); print(rendercmd);
         if(debug_print_only): print("[DEBUG_PRINT_ONLY] early exit"); exit(0);
@@ -539,9 +529,14 @@ if __name__ == "__main__":
         SubCommand(frame_gen, "frame_gen", isCmdSequence=True)
         SubCommand(rendercmd, "rendering")
     
-    # TODO: implement expected-output properly
-    expected_output = (workdir/output_filename).absolute().with_suffix(outSuffix)
-    if not (success := expected_output.exists()): print(f"[WARNING] expected output does not exist! ({expected_output})"); os.sync();
-    if success: SubCommand(f"cp --verbose --update=none '{expected_output}' '{final_destination.absolute()}'", logname=None)
+    print(f"moving outputs to final destinations...")
+    checked_outputs = Task.CheckExpectedOutputs(task, workdir)
+    for (work_file, final_dest) in checked_outputs:
+        SubCommand(f"cp --verbose --backup=numbered '{work_file}' '{final_dest}'", logname=None)
     
     print("\ndone\n")
+    return
+
+
+if __name__ == "__main__":
+    Main()
