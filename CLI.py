@@ -50,6 +50,7 @@ def ParseCmdline(arglist:list[str]|None = None) -> argparse.Namespace:
     #group_system.add_argument("--autodelete", dest="autodelete", action="store_true", default=True, help="wipe the (temp) working directory after processing")
     group_system.add_argument("--noclean", dest="autodelete", action="store_false", help="preserve temp files (deleted by default - ignore the following 'default' message)")
     # TODO: fix the display of '--noclean'/autodelete's default message
+    group_system.add_argument("--mkdir", action="store_true", default=False, help="create output directory if it doesn't exist")
     
     # parser.add_argument("--fps", dest="fps", type=int, default=60, help="FPS of RGB-ified video (default 60)")
     # TODO: duration/fps/numloops/reverse
@@ -78,7 +79,6 @@ def ParseCmdline(arglist:list[str]|None = None) -> argparse.Namespace:
     group_primary.add_argument("image_path", type=pathlib.Path, metavar="IMAGE")
     group_primary.add_argument("output_dir", type=pathlib.Path, metavar="DIRECTORY", nargs='?', help="output location - same as input by default")
     group_primary.add_argument("--stepsize", type=float, default=1.00, metavar='(float)')
-    # TODO: implement output-directory logic
     
     # TODO: implement WebP/APNG generation
     base_format_names = ("GIF", "WEBP", "MP4", "APNG", "ALL")
@@ -98,6 +98,21 @@ def ParseCmdline(arglist:list[str]|None = None) -> argparse.Namespace:
     
     parsed_args.image_path = parsed_args.image_path.expanduser().resolve().absolute()
     print(f"(expanded) image_path: '{parsed_args.image_path}'")
+    
+    parsed_args.output_dir = outdir = (
+        parsed_args.image_path.parent if not parsed_args.output_dir 
+        else parsed_args.output_dir.expanduser().resolve().absolute()
+    )
+    print(f"(expanded) output_dir: '{parsed_args.output_dir}/'")
+    
+    if not outdir.exists():
+        if not parsed_args.mkdir: 
+            print(f"[ERROR] nonexistent output directory: '{outdir}'")
+            print("  specify '--mkdir' to auto-create this directory")
+            print("  exiting...\n"); exit(6)
+        assert(outdir.parent.exists()), "cannot create nested directories"
+        outdir.mkdir(); print(f"created output directory: '{outdir.name}'")
+    assert(outdir.is_dir()), "output path must be a directory"
     
     # any args will be in a list appended to default, so just use that list if it exists 
     if (len(parsed_args.fileformats) > 1): parsed_args.fileformats = parsed_args.fileformats[1];
@@ -213,6 +228,11 @@ def SetupENV(alt_defaults:dict) -> dict:
     if (config_dir.exists() and config_dir.is_dir()): final_env["MAGICK_CONFIGURE_PATH"] = str(config_dir);
     else: print(f"[WARNING] bad path for 'MAGICK_CONFIGURE_PATH': {config_dir}");
     
+    # "MAGICK_TMPDIR" might be GM-only?
+    magick_tmp = pathlib.Path(os.getenv("MAGICK_TMPDIR", (pathlib.Path(f"/tmp/RGB_TOPLEVEL/TEMP_{Globals.MAGICKLIBRARY}/")).absolute()))
+    if (magick_tmp.exists() and magick_tmp.is_dir()): final_env["MAGICK_TMPDIR"] = str(magick_tmp);
+    else: print(f"[WARNING] bad path for 'MAGICK_TMPDIR': {magick_tmp}")
+    
     # adds info about file-access to '-monitor' output (including temporary files); "TRUE"/"FALSE"
     final_env["MAGICK_ACCESS_MONITOR"] = str(os.getenv("MAGICK_ACCESS_MONITOR", alt_defaults.get("MAGICK_ACCESS_MONITOR", False))).upper()
     
@@ -257,6 +277,11 @@ def CreateTempdir(checksum:str, autodelete=True, use_tmpfs=False) -> tuple[pathl
     
     matching_dirs = [*tempdir_toplevel.glob(f"{tmpdir_prefix}*{tmpdir_suffix}/")]
     assert(len(matching_dirs) <= 1), "[ERROR]: multiple pre-existing subdirectory matches!!! (this is a bug)"
+    
+    # see 'temporary-path' in 'policy.xml' and "${MAGICK_TMPDIR}"
+    for MK in ("IM", "GM"):
+        magick_tmpdir = tempdir_toplevel / f"TEMP_{MK}"
+        if not magick_tmpdir.exists(): magick_tmpdir.mkdir(); 
     
     if (isReusingSubdir := (len(matching_dirs) > 0)):
         if autodelete: print("[WARNING] 'autodelete' parameter will be ignored (directory already exists)");
@@ -445,7 +470,7 @@ def SubCommand(cmdline:list[str]|str, logname:str|None = "main", isCmdSequence:b
 
 if __name__ == "__main__":
     (conf_cmdline_args, conf_env_defaults) = Config.Init()
-    args = ParseCmdline(conf_cmdline_args)#; exit(0);
+    args = ParseCmdline(conf_cmdline_args)
     env_vars = SetupENV(conf_env_defaults)
     
     if not args.image_path.exists():
@@ -475,10 +500,10 @@ if __name__ == "__main__":
     # not using 'args.image_path' because that filename might be unsafe.
     print(f"output_filename: {output_filename}")
     print(f"original directory: {args.image_path.parent.absolute()}")
-    print(f"{(args.image_path.parent / output_filename).absolute()}")
+    print(f"final: {(args.output_dir / output_filename).absolute()}")
     
     outSuffix = f".{args.fileformats[-1]}" # .mp4/.gif
-    final_destination = pathlib.Path(args.image_path.parent / output_filename).with_suffix(outSuffix)
+    final_destination = pathlib.Path(args.output_dir / output_filename).with_suffix(outSuffix)
     
     renamelimit = 10; renamecount=1
     while(final_destination.exists() and (renamecount < renamelimit)):
@@ -489,7 +514,7 @@ if __name__ == "__main__":
         renamecount += 1
     if renamecount >= renamelimit: print(f"hit rename limit. exiting."); exit(3);
     assert(final_destination.parent.exists());
-    assert(final_destination.parent.absolute() == args.image_path.parent.absolute());
+    assert(final_destination.parent.absolute() == args.output_dir.absolute());
     print(f"final destination: '{final_destination.absolute()}'\n\n")
     
     #TODO: refactor this
