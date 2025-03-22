@@ -442,7 +442,7 @@ def SubCommand(cmdline:list[str]|str, logname:str|None = "main", isCmdSequence:b
     # TODO: Skip logging if None
     skiplog = (logname is None)
     log_filepath = log_dir / f"magickrgb_{logname}.log"
-    if logname is None: print("skipping logging"); log_filepath = log_dir/"magickrgb_main.log"; # still logs command, but not output
+    if logname is None: log_filepath = log_dir/"magickrgb_main.log"; # still logs command, but not output
     else:  print(f"logging to: '{log_filepath}'");
     print('_'*120); print()
     
@@ -503,36 +503,40 @@ def Main():
     print(f"original directory: {args.image_path.parent.absolute()}")
     print(f"final: {(args.output_dir / output_filename).absolute()}")
     
-    task = Task.TaskT(checksum, output_filename, args.crop, args.scales, args.output_dir, args.fileformats)
+    task = Task.TaskT(
+        srcimg,
+        workdir,
+        checksum,
+        args.crop,
+        args.scales,
+        'MIFF',
+        output_filename,
+        args.output_dir,
+        args.fileformats,
+    )
+    
     expected_outputs = Task.FillExpectedOutputs(task)
     assert(len(expected_outputs) > 0), "no expected outputs"
     
-    #TODO: refactor this
-    debug_print_cmds = Globals.DEBUG_PRINT_CMDS # print commands before passing to 'SubCommand'
-    debug_print_only = Globals.DEBUG_PRINT_ONLY # exit after printing commands; do not execute
-    debug_print_cmds = (debug_print_only or debug_print_cmds) # auto-enable when 'PRINT_ONLY' is True
+    commands = Task.GenerateFrames(task, RGB.EnumRotations(args.stepsize))
+    ffmpeg_commands = commands[-1]; commands = commands[:3]
     
-    (cmdlist, batch_cmd, (renderGIF, renderMP4)) = RGB.GenerateCommands(args.stepsize, writeMPC=False, writePNG=True, writeBatchfile=True, output_name=output_filename)
-    rendercmd = (renderGIF if ('gif' in args.fileformats) else renderMP4)
-    if (batch_cmd is not None):
-        if(debug_print_cmds): print('\n'); print(batch_cmd); print(rendercmd);
-        if(debug_print_only): print("[DEBUG_PRINT_ONLY] early exit"); exit(0);
-        SubCommand(batch_cmd, "frame_gen")
-        SubCommand(rendercmd, "rendering")
-    else:
-        preprocess = cmdlist[0]; frame_gen = cmdlist[1:]
-        if (debug_print_cmds):
-            print('\n'); print(preprocess) # cache_srcimg cmd
-            print('\n'.join(frame_gen)); print(rendercmd)
-        if (debug_print_only): print("[DEBUG_PRINT_ONLY] early exit"); exit(0);
-        SubCommand(preprocess, "preprocess_srcimg")
-        SubCommand(frame_gen, "frame_gen", isCmdSequence=True)
-        SubCommand(rendercmd, "rendering")
+    command_names = ("preprocess_srcimg", "generate_frames", "render", "render_ffmpeg")
+    batch_files = [ RGB.SaveCommand(name, command) for (name, command) in zip(command_names, commands) ]
+    batch_commands = [f"gm batch -echo on -stop-on-error on '{batchfile}'" for batchfile in batch_files]
+    for (cmd_name, batch_cmd) in zip(command_names, batch_commands):
+        SubCommand(batch_cmd, cmd_name)
+    
+    if (len(ffmpeg_commands) > 0):
+        SubCommand(ffmpeg_commands, "render_ffmpeg", isCmdSequence=True)
     
     print(f"moving outputs to final destinations...")
-    checked_outputs = Task.CheckExpectedOutputs(task, workdir)
-    for (work_file, final_dest) in checked_outputs:
-        SubCommand(f"cp --verbose --backup=numbered '{work_file}' '{final_dest}'", logname=None)
+    checked_outputs = Task.CheckExpectedOutputs(task)
+    move_output_cmd = [
+        f"cp --verbose --backup=numbered '{work_file}' '{final_dest}'"
+        for (work_file, final_dest) in checked_outputs
+    ]
+    SubCommand(move_output_cmd, logname=None, isCmdSequence=True)
     
     print("\ndone\n")
     return

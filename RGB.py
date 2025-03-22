@@ -58,6 +58,16 @@ def HueRotations(stepsize:float) -> list[str]:
     return rotation_strs
 
 
+def EnumRotations(stepsize:float) -> list[tuple[str,str]]:
+    rotation_strs = HueRotations(stepsize)
+    padding = 1 + int(log10(len(rotation_strs)))
+    enumRotations = [
+        (str(index).zfill(padding), rotation)
+        for (index, rotation) in enumerate(rotation_strs)
+    ]
+    return enumRotations
+
+
 def SaveCommand(filename: str, command:str|list[str], append:bool=False) -> pathlib.Path:
     """ writes/appends commands to file; returns written filepath"""
     cmdlist = (command if(type(command) is list) else [command]); del command
@@ -76,6 +86,7 @@ def SaveCommand(filename: str, command:str|list[str], append:bool=False) -> path
     return cmdfile
 
 
+# TODO: refactor or remove
 def GenerateCommands(stepsize:float, writeMPC:bool=True, writePNG:bool=False, writeBatchfile:bool=True, output_name:str|None=None):
     workdir = Globals.WORKING_DIR; assert(workdir.exists() and workdir.is_dir())
     assert(workdir.parent.name == Globals.TOPLEVEL_NAME), f"working directory expected to be under '{Globals.TOPLEVEL_NAME}'";
@@ -101,7 +112,7 @@ def GenerateCommands(stepsize:float, writeMPC:bool=True, writePNG:bool=False, wr
     framegen_cmd = { "MPC": None, "PNG": None, }
     
     for frameformat in frameformats:
-        frames_directory = workdir/f"hue_rotations_{frameformat.lower()}"
+        frames_directory = workdir/f"frames_{frameformat.lower()}"
         if frames_directory.exists(): assert(frames_directory.is_dir());
         else: frames_directory.mkdir();
         framegen_dir[frameformat] = frames_directory
@@ -120,7 +131,7 @@ def GenerateCommands(stepsize:float, writeMPC:bool=True, writePNG:bool=False, wr
             magick_convert+" '{0}' -scene {1} -modulate 100,100,{2} '{3}'".format(
                 cache_srcimg_path,
                 index, hue_rotation,
-                f"{frames_directory}/frame{index}_{hue_rotation}.{frameformat.lower()}"
+                f"{frames_directory}/frame{index}.{frameformat.lower()}"
             ) for (index, hue_rotation) in enumRotations
         ]
         cmdlist.extend(framegen_cmd[frameformat])
@@ -133,8 +144,8 @@ def GenerateCommands(stepsize:float, writeMPC:bool=True, writePNG:bool=False, wr
         else: # GraphicsMagick-mogrify creates a retarded directory structure ('-output-directory' always appends absolute-path of inputs); generate 'convert' command-list instead
             convert_frames_PNG = [
                 magick_convert+" '{0}' '{1}'".format(
-                    f"{framegen_dir['MPC']}/frame{index}_{hue_rotation}.mpc",
-                    f"{framegen_dir['PNG']}/frame{index}_{hue_rotation}.png"
+                    f"{framegen_dir['MPC']}/frame{index}.mpc",
+                    f"{framegen_dir['PNG']}/frame{index}.png"
                 ) for (index, hue_rotation) in enumRotations
             ]
         framegen_cmd['PNG'] = convert_frames_PNG
