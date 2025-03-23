@@ -6,6 +6,7 @@ __pycache__/
 notes/
 working_on_it/
 Testing_Env.py
+testimages/
 
 # exclude real configs, include examples
 configs_RGBifier/*.json

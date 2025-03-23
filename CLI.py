@@ -46,7 +46,7 @@ def ParseCmdline(arglist:list[str]|None = None) -> argparse.Namespace:
     group_primary = parser.add_argument_group("primary arguments")
     grp_transform = parser.add_argument_group("transform options")
     
-    group_system.add_argument("--magick", nargs=1, choices=["IM","GM"], default="GM", help="select magick library (ImageMagick / GraphicsMagick)")
+    group_system.add_argument("--magick", choices=["IM","GM"], default="GM", help="select magick library (ImageMagick / GraphicsMagick)")
     group_system.add_argument("--tmpfs", dest="use_tmpfs", action="store_true", default=False, help="ensure all temp-files are created on a tmpfs; arg is size of tmpfs")
     #group_system.add_argument("--autodelete", dest="autodelete", action="store_true", default=True, help="wipe the (temp) working directory after processing")
     group_system.add_argument("--noclean", dest="autodelete", action="store_false", help="preserve temp files (deleted by default - ignore the following 'default' message)")
@@ -64,7 +64,6 @@ def ParseCmdline(arglist:list[str]|None = None) -> argparse.Namespace:
         include '100%%' or '1x' to also produce full-size output."""
     )
     
-    # TODO: implement transforms
     grp_transform.add_argument("--crop", nargs=1, metavar="WxH[+X][+Y]", help="crop the image to 'WxH', with (optional) offset 'X,Y'")
     grp_transform.add_argument("--scale", nargs=1, dest="scales", action="extend", metavar="{int[%]|float[x]}")
     grp_transform.add_argument("--scales", nargs='+', action="extend", default=[], metavar="{int[%]|float[x]}", help=scale_help)
@@ -81,17 +80,15 @@ def ParseCmdline(arglist:list[str]|None = None) -> argparse.Namespace:
     group_primary.add_argument("output_dir", type=pathlib.Path, metavar="DIRECTORY", nargs='?', help="output location - same as input by default")
     group_primary.add_argument("--stepsize", type=float, default=1.00, metavar='(float)')
     
-    # TODO: implement WebP/APNG generation
     base_format_names = ("GIF", "WEBP", "MP4", "APNG", "ALL")
     valid_fileformats = [*base_format_names]
     # allow file-formats to be specified in lowercase and/or with leading '.'
     valid_fileformats.extend([FMT.lower() for FMT in valid_fileformats])
     valid_fileformats.extend([f".{FMT}" for FMT in valid_fileformats])
     
-    # TODO: implement generation of multiple types
     group_primary.add_argument("--filetype", dest="fileformats", metavar="type",
         choices=valid_fileformats, nargs='+', action='append', default=["GIF"],
-        help=f"list of output formats: {base_format_names}.\nlowercase or leading '.' are also accepted."
+        help=f"list of output formats: {base_format_names}.\nlowercase or leading '.' are also accepted.\nWebP requires IM specifically."
     )
     
     parsed_args = parser.parse_args(namespace=parsed_args)
@@ -105,6 +102,7 @@ def ParseCmdline(arglist:list[str]|None = None) -> argparse.Namespace:
         else parsed_args.output_dir.expanduser().resolve().absolute()
     )
     print(f"(expanded) output_dir: '{parsed_args.output_dir}/'")
+    # TODO: need an option for relative output-paths to be relative to cwd instead
     
     if not outdir.exists():
         if not parsed_args.mkdir: 
@@ -117,8 +115,8 @@ def ParseCmdline(arglist:list[str]|None = None) -> argparse.Namespace:
     
     # any args will be in a list appended to default, so just use that list if it exists 
     if (len(parsed_args.fileformats) > 1): parsed_args.fileformats = parsed_args.fileformats[1];
-    parsed_args.fileformats = [*set(fmt.lower().removeprefix('.') for fmt in parsed_args.fileformats)]
-    if ("all" in parsed_args.fileformats): parsed_args.fileformats = [fmt.lower() for fmt in base_format_names[:4]]
+    parsed_args.fileformats = [*set(fmt.upper().removeprefix('.') for fmt in parsed_args.fileformats)]
+    if ("ALL" in parsed_args.fileformats): parsed_args.fileformats = [fmt.upper() for fmt in base_format_names[:4]]
     print(f"selected output-filetypes: {parsed_args.fileformats}")
     
     # assert(type(parsed_args.fps) is int)
@@ -127,6 +125,9 @@ def ParseCmdline(arglist:list[str]|None = None) -> argparse.Namespace:
     assert(all([(fmt in valid_fileformats) for fmt in parsed_args.fileformats])), "invalid format after processing cmdline"
     
     Globals.MAGICKLIBRARY = parsed_args.magick
+    if (("WEBP" in parsed_args.fileformats) and (Globals.MAGICKLIBRARY == "GM")):
+        print("[ERROR] 'WebP' format is only compatible with ImageMagick - not GraphicsMagick. (use: '--magick=IM')")
+        exit(9)
     
     print(parsed_args) # Namespace(...)
     PrintDict(parsed_args.__dict__, "args")
@@ -433,6 +434,8 @@ def SubCommand(cmdline:list[str]|str, logname:str|None = "main", isCmdSequence:b
     :param logname: identifier used in filename. Skip logging if None.
     :param isCmdSequence: 'cmdline' is a list of commands to execute (rather than a single cmdline split by word)
     """
+    if (len(cmdline) == 0): print(f"[WARNING] skipping subcommand: empty cmdline! (logname: {logname})"); return;
+    
     print('_'*120); print(); L = "\n  "
     subcmd_str = ('commandseq: [{1}{0}\n]' if isCmdSequence else 'subcommand: "{0}"')
     print(subcmd_str.format((f",{L}".join(cmdline) if isCmdSequence else cmdline),L))
@@ -466,7 +469,7 @@ def SubCommand(cmdline:list[str]|str, logname:str|None = "main", isCmdSequence:b
         logfile.write('_'*120); logfile.write("\n\n")
     
     print("\n")
-    return completed.returncode
+    return
 
 
 def Main():
@@ -518,17 +521,19 @@ def Main():
     expected_outputs = Task.FillExpectedOutputs(task)
     assert(len(expected_outputs) > 0), "no expected outputs"
     
+    # command_names = ("preprocessing", "frame_generation", "rendering")
     commands = Task.GenerateFrames(task, RGB.EnumRotations(args.stepsize))
-    ffmpeg_commands = commands[-1]; commands = commands[:3]
+    (webp_rendercmds, ffmpeg_commands) = commands[-2:]; commands = commands[:3]
     
-    command_names = ("preprocess_srcimg", "generate_frames", "render", "render_ffmpeg")
-    batch_files = [ RGB.SaveCommand(name, command) for (name, command) in zip(command_names, commands) ]
+    cmd_names = ("preprocessing", "frame_generation", "rendering", "rendering_webp", "rendering_ffmpeg")
+    batch_files = [RGB.SaveCommand(name, cmd) for (name, cmd) in zip(cmd_names[:3], commands[:3])][0::1]
     batch_commands = [f"gm batch -echo on -stop-on-error on '{batchfile}'" for batchfile in batch_files]
-    for (cmd_name, batch_cmd) in zip(command_names, batch_commands):
-        SubCommand(batch_cmd, cmd_name)
     
-    if (len(ffmpeg_commands) > 0):
-        SubCommand(ffmpeg_commands, "render_ffmpeg", isCmdSequence=True)
+    if (use_IM := (Globals.MAGICKLIBRARY == "IM")): batch_commands = []; # prevents GM-only cmds
+    batch_zip = zip(cmd_names, (batch_commands if (Globals.MAGICKLIBRARY == "GM") else commands))
+    for (cmds_name, commands) in batch_zip: SubCommand(commands, cmds_name, isCmdSequence=use_IM)
+    if  (len(webp_rendercmds) > 0): SubCommand(webp_rendercmds, cmd_names[3], isCmdSequence=True)
+    if  (len(ffmpeg_commands) > 0): SubCommand(ffmpeg_commands, cmd_names[4], isCmdSequence=True)
     
     print(f"moving outputs to final destinations...")
     checked_outputs = Task.CheckExpectedOutputs(task)

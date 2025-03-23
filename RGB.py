@@ -174,17 +174,14 @@ def GenerateCommands(stepsize:float, writeMPC:bool=True, writePNG:bool=False, wr
     output_name = (output_name if output_name else f"{Globals.SRCIMG_PATH.with_suffix('').name}_RGB".removeprefix('srcimg_')) 
     frameformat = frameformats[0].lower(); frames_directory = framegen_dir[frameformat.upper()] # uses "MPC" unless "PNG" is only format
     createGIF = f"{convert_cmd} '{frames_directory}/frame*.{frameformat}' {GIFargstr} '{workdir/output_name}.gif'"
-    createMP4 = f"ffmpeg -y -f image2 -framerate 60 -pattern_type glob -i '{framegen_dir["PNG"]}/frame*.png' '{workdir/output_name}.mp4'"
+    createMP4 = f"ffmpeg -hide_banner -y -f image2 -framerate 30 -pattern_type glob -i '{framegen_dir["PNG"]}/frame*.png' '{workdir/output_name}.mp4'"
     # '-y' overwrites output without asking
     # '-pattern_type glob' is 'image2'-specific. ffmpeg filename format (both in/out) is normally like: 'asdf-%03d.jpeg'
     
     return (cmdlist, batch_cmd, (createGIF, createMP4))
 
 
-# TODO: ffmpeg mp4, graphicsmagick MPEG (.mpg) output? APNG?
 # TODO: generate colormap without 'remap'
-
-# TODO: transcode input image to PNG and downscale/crop if necessary
-# transparency doesn't seem to be a problem, as long as source was PNG
-
 # TODO: handle GIF/video inputs (divide into frames and interpolate between them)
+# TODO: gif needs options for default-delay and ignore-loop
+# TODO: hwaccel with ffmpeg

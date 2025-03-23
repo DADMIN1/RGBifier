@@ -25,7 +25,7 @@ class TaskT():
     self.rescales = (rescales if(rescales is not None) else ['100%'])
     
     self.frame_formats = [ frame_format, ]
-    if (('apng' in output_fileformats) or ('mp4' in output_fileformats)): self.frame_formats.append('PNG');
+    if (('APNG' in output_fileformats) or ('MP4' in output_fileformats)): self.frame_formats.append('PNG');
     
     self.image_preprocess = [] # scaled and/or cropped
     self.expected_outputs = []
@@ -67,8 +67,8 @@ def FillExpectedOutputs(task:TaskT) -> list[str]:
     
     task.expected_outputs.clear()
     for (scaleval, scalestr) in ParseScales(rescales):
-        for fmt in output_fileformats:
-            new_name = f"{filename}{scalestr}.{fmt}"
+        for FMT in output_fileformats:
+            new_name = f"{filename}{scalestr}.{(fmt := FMT.lower())}"
             final_destination = output_directory/new_name
             
             renamelimit = 10; renamecount=1
@@ -82,7 +82,7 @@ def FillExpectedOutputs(task:TaskT) -> list[str]:
             assert(final_destination.parent.exists());
             assert(final_destination.parent.absolute() == output_directory.absolute());
             print(f"final destination: '{final_destination.absolute()}'")
-            task.expected_outputs.append((fmt, (scaleval,scalestr), final_destination))
+            task.expected_outputs.append((FMT, (scaleval,scalestr),final_destination))
     
     dests = sorted([expected[-1] for expected in task.expected_outputs] )
     print(f"expected outputs: {'\n  '.join(str(x.name) for x in dests)}")
@@ -137,7 +137,7 @@ def SetupFramesDirectories(task:TaskT, scales:list[tuple[int,str]]):
     return directories
 
 
-def GenerateFrames(task:TaskT, enumRotations:list[tuple[str,str]]) -> tuple[list[str],list[str],list[str],list[str]]:
+def GenerateFrames(task:TaskT, enumRotations:list[tuple[str,str]]) -> tuple[list[str],list[str],list[str],list[str],list[str]]:
     assert(task.image_source.exists() and (task.image_source.parent == task.working_path))
     assert(task.working_path.exists() and task.working_path.is_dir())
     assert(len(task.frame_formats) > 0)
@@ -179,28 +179,33 @@ def GenerateFrames(task:TaskT, enumRotations:list[tuple[str,str]]) -> tuple[list
     for (SRC, DER) in derivative_mapping:
         from_glob = f"'{task.primary_format}:{SRC['frames_directory']}/frame*.{task.primary_format.lower()}'"
         dest_glob = f"'{DER['frameformat']}:{DER['frames_directory']}/frame%0{index_len}d.{DER['frameformat'].lower()}'"
-        framegen_commands.append(f"convert {from_glob} +adjoin {dest_glob}")
+        matte_arg = ('+matte' if ('APNG' in task.output_fileformats) and (DER['frameformat']=='PNG') else '')
+        framegen_commands.append(f"convert {from_glob} {matte_arg} +adjoin {dest_glob}")
+        # '+matte' removes alpha channel; ensuring black background for APNG (transparency renders as white in browsers)
     
     
     render_commands = []
+    webp_rendercmds = []
     ffmpeg_commands = []
-    ffmpeg_begin = "ffmpeg -y -f image2 -framerate 60 -pattern_type sequence -i"
-    webp_options = "-quality 100 -define webp:thread-level=1 -define webp:use-sharp-yuv=true -define webp:lossless=true -define webp:method=6"
+    ffmpeg_begin = "ffmpeg -hide_banner -y -f image2 -framerate 30 -pattern_type sequence -i"
+    webp_options = "-quality 100 -define webp:thread-level=1 -define webp:lossless=true -define webp:method=6 -define webp:use-sharp-yuv=true"
     
     for (outfmt, (scaleval, scalestr), final_destination) in task.expected_outputs:
-        srcfmt = ("PNG" if (use_ffmpeg := (outfmt in ('apng','mp4'))) else task.primary_format)
+        srcfmt = ("PNG" if (use_ffmpeg := (outfmt in ('APNG','MP4'))) else task.primary_format)
         framedir = task.working_path / f"{srcfmt.lower()}_frames{scalestr}"
         work_file = task.working_path / final_destination.name
         
         if use_ffmpeg:
-            ffmpeg_commands.append(f"{ffmpeg_begin} '{framedir}/frame%0{index_len}d.{srcfmt.lower()}' '{work_file}'")
+            apng_opts = ("-ignore_loop false -plays 0 -default_fps 30" if (outfmt == 'APNG') else '') # enables animation looping
+            ffmpeg_commands.append(f"{ffmpeg_begin} '{framedir}/frame%0{index_len}d.{srcfmt.lower()}' {apng_opts} '{work_file}'")
             continue
         
-        #TODO: webp output is ImageMagick-only; no animation in GraphicsMagick
-        opts = (webp_options if (outfmt == "webp") else "")
-        cmd = f"convert '{srcfmt}:{framedir}/frame*.{srcfmt.lower()}' {opts} -adjoin '{outfmt.upper()}:{work_file}'"
-        render_commands.append(cmd)
+        # webp output is ImageMagick-only; no animation in GraphicsMagick
+        (magick_convert, opts) = (("convert-im6.q16", webp_options) if (isWEBP := (outfmt == "WEBP")) else ("convert", ""))
+        cmd = f"{magick_convert} '{srcfmt}:{framedir}/frame*.{srcfmt.lower()}' {opts} -adjoin '{outfmt}:{work_file}'"
+        if isWEBP: render_commands.append(cmd); 
+        else: webp_rendercmds.append(cmd);
     
-    return (preprocess_commands, framegen_commands, render_commands, ffmpeg_commands)
+    return (preprocess_commands, framegen_commands, render_commands, webp_rendercmds, ffmpeg_commands)
 
 
