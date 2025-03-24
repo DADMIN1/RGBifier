@@ -64,7 +64,9 @@ def ParseCmdline(arglist:list[str]|None = None) -> argparse.Namespace:
         include '100%%' or '1x' to also produce full-size output."""
     )
     
-    grp_transform.add_argument("--crop", nargs=1, metavar="WxH[+X][+Y]", help="crop the image to 'WxH', with (optional) offset 'X,Y'")
+    grav = ["north","south","east","west"]; gravities = (*grav, *[''.join((P,S)) for P in grav[:2] for S in grav[2:]])
+    grp_transform.add_argument("--crop", metavar="WxH[%][+X][+Y]", help="crop the image to 'WxH', with (optional) offset 'X,Y'")
+    grp_transform.add_argument("--gravity", choices=("center",*gravities), default="center", help="anchoring of crop operation")
     grp_transform.add_argument("--scale", nargs=1, dest="scales", action="extend", metavar="{int[%]|float[x]}")
     grp_transform.add_argument("--scales", nargs='+', action="extend", default=[], metavar="{int[%]|float[x]}", help=scale_help)
     
@@ -511,6 +513,7 @@ def Main():
         workdir,
         checksum,
         args.crop,
+        args.gravity,
         args.scales,
         'MIFF',
         output_filename,
