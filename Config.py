@@ -27,12 +27,8 @@ example_config = {
         "--noclean",
     ],
     
-    # these correspond to the 'DEBUG_' variables in 'Globals.py'
-    "DEBUG_FLAGS": [
-        "PRINT_CMDS",
-        "PRINT_ONLY",
-        "PRINT_GLOBALS",
-    ],
+    # names corresponding to the 'DEBUG_' variables in 'Globals.py' - "PRINT_ONLY", "PARSE_ONLY" etc.
+    "DEBUG_FLAGS": [ *Globals.debug_flag_names ],
 }
 
 
@@ -93,27 +89,6 @@ def WriteConfig(config:dict, filename:str|None=None, backup_old:bool=True) -> pa
     return config_path
 
 
-def ApplyDebugFlags(debug_flags: list):
-    debug_flag_names = ["PRINT_GLOBALS", "PRINT_CMDS", "PRINT_ONLY"]
-    
-    def DBGFLAG(name:str, val:bool|None = None):
-        assert(name in debug_flag_names), f"invalid DBGFLAG: '{name}'"
-        if (val is None): return eval(f"DEBUG_{name}", Globals.__dict__);
-        else: Globals.__dict__[f"DEBUG_{name}"] = val; return val;
-        #eval(f'globals()["Globals"].DEBUG_{name}')
-    
-    for flag_name in debug_flag_names:
-        if ((global_val := DBGFLAG(flag_name)) is None): new_val = DBGFLAG(flag_name, (flag_name in debug_flags));
-        elif not global_val: new_val = DBGFLAG(flag_name, (flag_name in debug_flags))
-        else: continue; # global_val already True, don't unset
-        if (global_val != new_val): print(f"set debug_flag '{flag_name}': {new_val}")
-    
-    # auto-enable 'DEBUG_PRINT_CMDS' when 'PRINT_ONLY' is True
-    Globals.DEBUG_PRINT_CMDS = (Globals.DEBUG_PRINT_ONLY or Globals.DEBUG_PRINT_CMDS)
-    
-    return
-
-
 def ApplyConfig(config:dict) -> (bool, tuple):
     """ :return: flag indicating success/failure and parsed variables """
     success = True; config_name = config.pop("NAME", None) # pop for 'unrecognized_entries' below
@@ -128,14 +103,13 @@ def ApplyConfig(config:dict) -> (bool, tuple):
         for entry in unrecognized_entries:
             print(f"  unrecognized entry: '{entry}'")
         print(f"error applying config: '{config_name}'")
-        return (False, (None, None))
     
     cmdline_args = config.get("CMDLINE_ARGS", [])
     env_defaults = config.get("ENV_DEFAULTS", {})
     debug_flags  = config.get("DEBUG_FLAGS",  [])
     
-    ApplyDebugFlags(debug_flags)
-    
+    try: Globals.ApplyDebugFlags(debug_flags);
+    except NameError as FAIL: success = False; print(FAIL);
     return (success, (cmdline_args, env_defaults))
 
 
@@ -171,9 +145,9 @@ def Init(write_default_configs = True, overwrite_existing = False):
     if write_default_configs: WriteDefaultConfigs(overwrite_existing);
     
     (conf_load_success, config) = LoadConfig()
-    if not conf_load_success: print(f"[ERROR]: config_dir does not exist"); exit(6);
+    if not conf_load_success: print(f"[ERROR] config_dir does not exist"); exit(6);
     
     (conf_apply_success, (conf_cmdline_args, conf_env_defaults)) = ApplyConfig(config)
-    if not conf_apply_success: print(f"[ERROR]: failed to apply config"); exit(7);
+    if not conf_apply_success: print(f"[ERROR] failed to apply config"); exit(7);
     
     return (conf_cmdline_args, conf_env_defaults)
