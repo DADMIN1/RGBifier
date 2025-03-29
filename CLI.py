@@ -41,8 +41,9 @@ class ExplicitPath(pathlib.Path):
     
     def under(self, newparent:pathlib.Path):
         if self.is_empty: return newparent;
+        top_parent = (self.parents[-1] if (len(self.parents) > 0) else '/')
         return newparent.joinpath(
-            pathlib.Path(*self.argz).relative_to(self.parents[-1]) 
+            pathlib.Path(*self.argz).relative_to(top_parent)
             if (self.is_absol) else pathlib.Path(*self.argz)
         )
     
@@ -60,7 +61,7 @@ class ExplicitPath(pathlib.Path):
 # custom formatter_class combining the behavior of two arparse formatters
 # allows newlines within help-text and automatically appends info about default value
 class CustomFormatter(argparse.RawTextHelpFormatter, argparse.ArgumentDefaultsHelpFormatter):
-    def __init__(self, prog): super().__init__(prog, indent_increment=2, width=120);
+    def __init__(self, prog): super().__init__(prog, indent_increment=2, max_help_position=32, width=72);
 
 
 def ParseCmdline(arglist:list[str]|None = None) -> argparse.Namespace:
@@ -70,28 +71,33 @@ def ParseCmdline(arglist:list[str]|None = None) -> argparse.Namespace:
     )
     #TODO: description and epilog
     
-    group_system = parser.add_argument_group("system options")
-    group_output = parser.add_argument_group("output options")
-    group_primary = parser.add_argument_group("primary arguments")
-    grp_transform = parser.add_argument_group("transform options")
+    group_system = parser.add_argument_group("system-options")
+    primary_args = parser.add_argument_group("main arguments")
+    grp_relative = parser.add_argument_group("relative-flags")
+    group_output = parser.add_argument_group("output-options")
+    group_relopt = grp_relative.add_mutually_exclusive_group()
+    # group_relopt = group_output.add_mutually_exclusive_group()
+    grp_transform = parser.add_argument_group("transformations")
+    
+    # grp_relative.title = None # prevents title from printing; leaving a single empty line above group
     
     group_system.add_argument("--magick", choices=["IM","GM"], default="GM", help="select magick library (ImageMagick / GraphicsMagick)")
-    group_system.add_argument("--tmpfs", dest="use_tmpfs", action="store_true", help="ensure all temp-files are created on a tmpfs")
+    group_system.add_argument("--tmpfs", dest="use_tmpfs", action="store_true", help="use tmpfs (RAM filesystem) for workdir and tempfiles - preventing all disk writes")
     #group_system.add_argument("--autodelete", dest="autodelete", action="store_true", default=True, help="wipe the (temp) working directory after processing")
-    group_system.add_argument("--noclean", dest="autodelete", action="store_false", help="preserve temp files (deleted by default - ignore the following 'default' message)")
-    group_system.add_argument("--print-only", action="store_true", help="exit after printing all commands that would be executed")
-    group_system.add_argument("--parse-only", action="store_true", help="exit after loading config and parsing commandline")
+    group_system.add_argument("--noclean", dest="autodelete", action="store_false", help="preserve temp-files (deleted by default - ignore the following 'default' message)")
     # TODO: fix the display of '--noclean'/autodelete's default message
+    group_system.add_argument("--print-only", action="store_true", help="exit after printing the commands that would have been executed")
+    group_system.add_argument("--parse-only", action="store_true", help="exit after completing commandline parsing (and loading config)")
     
-    group_output.add_argument("--mkdir", action="store_true", help="create output directory if it doesn't exist (parent must exist)")
-    group_output.add_argument("--mkdir-parents", action="store_true", help="mkdir also creates any missing parents. implies --mkdir")
-    group_output.add_argument("--relative-dest", action="store_true", help="always interpret output-path relative to location of source-image")
-    group_output.add_argument("--relative-cwd" , action="store_true", help="always interpret output-path relative to CWD (currrent directory)")
+    group_output.add_argument("--mkdir", action="store_true", help="create output-directory if necessary (all parents must already exist)")
+    group_output.add_argument("--mkdir-parent", action="store_true", help="mkdir also creates any missing parent-directories (implies '--mkdir')")
+    group_relopt.add_argument("--relative-img", action="store_true", help="reinterpret the output-directory relative to location of source-image")
+    group_relopt.add_argument("--relative-cwd", action="store_true", help="reinterpret the output-directory relative to CWD (currrent directory)")
+    group_relopt.add_argument("--relative-tmp", action="store_true", help="reinterpret the output-directory relative to RGB_TOPLEVEL (tmpfs dir)")
     # TODO: explain interpretation of output-path and behavior of relative flags
     
     # parser.add_argument("--fps", dest="fps", type=int, default=60, help="FPS of RGB-ified video (default 60)")
     # TODO: duration/fps/numloops/reverse
-    # TODO: add 'script' output option
     
     scale_help = textwrap.dedent("""\
         suffix: '%%' denotes percentage-scaling (integer)
@@ -101,7 +107,7 @@ def ParseCmdline(arglist:list[str]|None = None) -> argparse.Namespace:
     )
     
     grav = ["north","south","east","west"]; gravities = (*grav, *[''.join((P,S)) for P in grav[:2] for S in grav[2:]])
-    grp_transform.add_argument("--crop", metavar="WxH[%][+X][+Y]", help="crop the image to 'WxH', with (optional) offset 'X,Y'")
+    grp_transform.add_argument("--crop", metavar="{[W]x[H][%]}[+X][+Y]", help="crop image to 'WxH', at (optional) offset 'X,Y'")
     grp_transform.add_argument("--gravity", choices=("center",*gravities), default="center", help="anchoring of crop operation")
     grp_transform.add_argument("--scale", nargs=1, dest="scales", action="extend", metavar="{int[%]|float[x]}")
     grp_transform.add_argument("--scales", nargs='+', action="extend", default=[], metavar="{int[%]|float[x]}", help=scale_help)
@@ -114,9 +120,9 @@ def ParseCmdline(arglist:list[str]|None = None) -> argparse.Namespace:
     
     # TODO: use 'parse_known_args' and 'parse_intermixed_args' for this behavior
     # positional arguments must be added after initial arglist parse, otherwise it errors because they're required 
-    group_primary.add_argument("image_path", type=pathlib.Path, metavar="IMAGE")
-    group_primary.add_argument("output_dir", type=ExplicitPath, metavar="DIRECTORY", nargs='?', help="output location - same as input by default")
-    group_primary.add_argument("--stepsize", type=float, default=1.00, metavar='(float)')
+    primary_args.add_argument("image_path", type=pathlib.Path, metavar="IMAGE", help="path of image being RGBified (this argument is mandatory)")
+    primary_args.add_argument("output_dir", type=ExplicitPath, metavar="DIRECTORY", nargs='?', help="output location - same as input by default")
+    primary_args.add_argument("--stepsize", type=float, default=1.00, metavar='(float)', help="modulation per frame - 1/200th of full cycle")
     
     base_format_names = ("GIF", "MP4", "APNG", "WEBP", "ALL")
     valid_fileformats = [*base_format_names]
@@ -124,69 +130,38 @@ def ParseCmdline(arglist:list[str]|None = None) -> argparse.Namespace:
     valid_fileformats.extend([FMT.lower() for FMT in valid_fileformats])
     valid_fileformats.extend([f".{FMT}" for FMT in valid_fileformats])
     
-    group_primary.add_argument("--filetype", dest="fileformats", metavar="type",
+    group_output.add_argument("--format", dest="output_formats", metavar="fmt",
         choices=valid_fileformats, nargs='+', action='append', default=["GIF"],
-        help=f"list of output formats: {base_format_names}.\nlowercase or leading '.' are also accepted.\nWebP requires IM specifically."
+        help=f"list of output formats: {base_format_names}\n"
+        +"names can be in lowercase and may have a leading dot ('.gif')\n"
+        +"animated WebP specifically requires ImageMagick (--magick=IM)\n"
+        +"MP4 and APNG outputs require ffmpeg"
     )
     
     parsed_args = parser.parse_args(namespace=parsed_args)
     print(f"[parsed cmdline]: {parsed_args}\n")
     
-    if parsed_args.relative_dest and parsed_args.relative_cwd:
-        print("\n[ERROR] 'relative_dest' and 'relative_cwd' are mutually exclusive!\n")
-        exit(5)
-    
     parsed_args.image_path = parsed_args.image_path.expanduser().resolve().absolute()
     print(f"(expanded) image_path: '{parsed_args.image_path}'")
     
-    if (outdir := parsed_args.output_dir) is None: outdir = ExplicitPath('.');
-    parsed_args.output_dir = outdir = (
-        parsed_args.image_path.parent if (not parsed_args.output_dir) or outdir.is_empty
-        else outdir.under(pathlib.Path.cwd()) if parsed_args.relative_cwd or (outdir.explicit and not parsed_args.relative_dest)
-        else outdir.under(parsed_args.image_path.parent) if parsed_args.relative_dest or (outdir.relative and not parsed_args.relative_cwd)
-        else outdir
-    ).expanduser().resolve().absolute()
-    
-    print(f"(expanded) output_dir: '{parsed_args.output_dir}/'")
-    
-    if parsed_args.mkdir_parents: parsed_args.mkdir = True;
-    if not (mkdir_success := outdir.exists()):
-        if parsed_args.mkdir and (outdir.parent.exists() or parsed_args.mkdir_parents):
-            mkdir_success = True
-            outdir.mkdir(parents=parsed_args.mkdir_parents)
-            print(f"created output directory: '{outdir.name}'")
-        elif not outdir.parent.exists():
-            missing_parents = [*reversed([(highest := P).name for P in outdir.parents if not P.exists()])]
-            above_top = f".../{abv.name}" if ((abv := highest.parent).parent.parts != tuple(outdir.root,)) else ''
-            rel_miss = f"'{outdir.parent.name}/{outdir.name}' ({'/'.join([above_top, *missing_parents])}/)"
-            top_miss = f"'{highest.name}' ({highest.absolute()}/)"
-            print(f"[ERROR] cannot create parents of nested subdirectory: {rel_miss} under non-existent location: {top_miss}")
-            print(f"  specify '--mkdir-parents' to auto-create all missing subdirectories: {[*missing_parents, outdir.name]}")
-        elif not parsed_args.mkdir:
-            print(f"[ERROR] nonexistent output-directory: '{outdir}'")
-            print("  specify '--mkdir' to auto-create this directory")
-    if not outdir.exists(): print("  output-directory could not be created."); mkdir_success=False;
-    elif not outdir.is_dir(): print("  output-directory is not a directory."); mkdir_success=False;
-    if not mkdir_success: print("  exiting...\n"); exit(6)
-    
     # any args will be in a list appended to default, so just use that list if it exists 
-    if (len(parsed_args.fileformats) > 1): parsed_args.fileformats = parsed_args.fileformats[1];
-    parsed_args.fileformats = [*set(fmt.upper().removeprefix('.') for fmt in parsed_args.fileformats)]
-    if ("ALL" in parsed_args.fileformats):
+    if (len(parsed_args.output_formats) > 1): parsed_args.output_formats = parsed_args.output_formats[1];
+    parsed_args.output_formats = [*set(fmt.upper().removeprefix('.') for fmt in parsed_args.output_formats)]
+    if ("ALL" in parsed_args.output_formats):
         lastindex = (3 if (parsed_args.magick == "GM") else 4) # GM won't include 'WEBP'
-        parsed_args.fileformats = [fmt.upper() for fmt in base_format_names[:lastindex]]
-    print(f"selected output-filetypes: {parsed_args.fileformats}")
+        parsed_args.output_formats = [fmt.upper() for fmt in base_format_names[:lastindex]]
+    print(f"selected output-filetypes: {parsed_args.output_formats}")
     
-    if (("WEBP" in (formats := parsed_args.fileformats)) and (parsed_args.magick == "GM")):
+    if (("WEBP" in (formats := parsed_args.output_formats)) and (parsed_args.magick == "GM")):
         print("\n[WARNING] 'WebP' format is only compatible with ImageMagick - not GraphicsMagick. (use: '--magick=IM')")
-        if (len(formats) > 1): parsed_args.fileformats = [F for F in formats if (F != "WEBP")]; print("[WARNING] excluding WebP!");
+        if (len(formats) > 1): parsed_args.output_formats = [F for F in formats if (F != "WEBP")]; print("[WARNING] excluding WebP!");
         else: print("automatically switching to ImageMagick backend"); parsed_args.magick="IM"; # when no other format was selected
     print("")
     
     # assert(type(parsed_args.fps) is int)
     assert(parsed_args.stepsize != 0), "stepsize must not be zero"
-    assert(len(parsed_args.fileformats) > 0), "missing output format"
-    assert(all([(fmt in valid_fileformats) for fmt in parsed_args.fileformats])), "invalid format after processing cmdline"
+    assert(len(parsed_args.output_formats) > 0), "missing output format"
+    assert(all([(fmt in valid_fileformats) for fmt in parsed_args.output_formats])), "invalid format after processing cmdline"
     if not parsed_args.image_path.exists(): print(f"[ERROR] non-existent input_path: [{parsed_args.image_path}]"); exit(1);
     
     Globals.MAGICKLIBRARY = parsed_args.magick; debug_flags = []
@@ -290,15 +265,16 @@ def SetupENV(alt_defaults:dict) -> dict:
     print(f"using MAGICK_DEBUG:'{MAGICK_DBG_SETTING}'")
     final_env["MAGICK_DEBUG"] = (MAGICK_DBG_SETTING)
     
-    # TODO: should not be relative to cwd; add a global var for the program path
-    config_dir = pathlib.Path(os.getenv("MAGICK_CONFIGURE_PATH", (pathlib.Path.cwd()/"magick_configs").absolute()))
+    config_dir = pathlib.Path(os.getenv("MAGICK_CONFIGURE_PATH", (Globals.PROGRAM_DIR / "magick_configs/").absolute()))
     if (config_dir.exists() and config_dir.is_dir()): final_env["MAGICK_CONFIGURE_PATH"] = str(config_dir);
     else: print(f"[WARNING] bad path for 'MAGICK_CONFIGURE_PATH': {config_dir}");
     
     # "MAGICK_TMPDIR" might be GM-only?
-    magick_tmp = pathlib.Path(os.getenv("MAGICK_TMPDIR", (pathlib.Path(f"/tmp/RGB_TOPLEVEL/TEMP_{Globals.MAGICKLIBRARY}/")).absolute()))
-    if (magick_tmp.exists() and magick_tmp.is_dir()): final_env["MAGICK_TMPDIR"] = str(magick_tmp);
-    else: print(f"[WARNING] bad path for 'MAGICK_TMPDIR': {magick_tmp}")
+    # parent_tmp = wdir.parent if (wdir := Globals.WORKING_DIR).is_relative_to('/tmp/') else pathlib.Path("/tmp/RGB_TOPLEVEL/")
+    parent_tmp = pathlib.Path("/tmp/RGB_TOPLEVEL/") # TODO: TMPDIR has not been initialized yet (CreateTempdir is called later)
+    magick_tmp = pathlib.Path(os.getenv("MAGICK_TMPDIR", (parent_tmp / f"TEMP_{Globals.MAGICKLIBRARY}/").absolute()))
+    if (magick_tmp.is_dir()): final_env["MAGICK_TMPDIR"] = str(magick_tmp);
+    else: print(f"[WARNING] invalid env 'MAGICK_TMPDIR': {magick_tmp}");
     
     # adds info about file-access to '-monitor' output (including temporary files); "TRUE"/"FALSE"
     final_env["MAGICK_ACCESS_MONITOR"] = str(os.getenv("MAGICK_ACCESS_MONITOR", alt_defaults.get("MAGICK_ACCESS_MONITOR", False))).upper()
@@ -318,10 +294,10 @@ def CreateTempdir(checksum:str, autodelete=True, use_tmpfs=False) -> tuple[pathl
     """ 
     :param checksum: hash of input file; used as prefix for temporary subdirectory
     :param autodelete: the new temporary-directory will be deleted when program exits (has no effect if pre-existing temporary is reused)
-    :param use_tmpfs: toplevel will be located on tmpfs rather than under cwd. (attempts to mount tmpfs if mountpoint doesn't exist)
+    :param use_tmpfs: toplevel is located on tmpfs instead of under program-directory (attempts to mount tmpfs if mountpoint doesn't exist)
     :return: new temp directory and flag indicating that a pre-existing directory was found. (path is 'None' if tmpfs-mount failed)
     """
-    tempdir_toplevel = pathlib.Path.cwd() / f"{Globals.TOPLEVEL_NAME}" # parent of all per-process tempdirs
+    tempdir_toplevel = Globals.PROGRAM_DIR / f"{Globals.TOPLEVEL_NAME}" # parent of all per-process tempdirs
     if use_tmpfs: tempdir_toplevel = pathlib.Path(f"/tmp/{Globals.TOPLEVEL_NAME}");
     if (isNewlyCreated := (not tempdir_toplevel.exists())):
         tempdir_toplevel.mkdir(); print(f"created toplevel directory: '{tempdir_toplevel}'")
@@ -403,6 +379,77 @@ def CreateTempdir(checksum:str, autodelete=True, use_tmpfs=False) -> tuple[pathl
 
 
 
+# output-directory cannot be resolved during initial parsing because 'relative_tmp' requires knowledge of 'TEMPDIR'
+# also, the 'mkdir' calls would be a serious problem if they occurred before tmpfs was actually mounted
+def ResolveOutputPath(parsed_args:argparse.Namespace, toplevel:pathlib.Path):
+    """resolves output-directory path and handles related args \n
+       this function must only be called after 'CreateTempdir()'
+       :param parsed_args: namespace returned by 'ParseCmdline()'
+       :param toplevel: "RGB_TOPLEVEL" directory (Globals.TOPLEVEL_NAME)
+       :returns: output-directory path
+    """
+    assert(Globals.TEMPDIR_REF is not None), "TEMPDIR has not been initialized";
+    assert(toplevel.name == Globals.TOPLEVEL_NAME), f"toplevel name: {toplevel.name}; expected: {Globals.TOPLEVEL_NAME}";
+    assert(toplevel.is_dir()), "toplevel-path does not exist or is not a directory!";
+    
+    print(f"resolving output-path...")
+    print(f"toplevel: {toplevel}")
+    # print(f"parsed_args:\n{parsed_args}\n")
+    # PrintDict(parsed_args.__dict__, "parsed_args")
+    if isinstance(parsed_args.output_dir, ExplicitPath):
+        dir_repr = "".join(parsed_args.output_dir.argz)
+    else: dir_repr = parsed_args.output_dir;
+    print(f"(unparsed) output_dir: '{dir_repr}'")
+    
+    relative_flags = (
+        (parsed_args.relative_tmp, toplevel),
+        (parsed_args.relative_cwd, pathlib.Path.cwd()),
+        (parsed_args.relative_img, parsed_args.image_path.parent),
+    )
+    
+    # when output-path is unspecified, relative flags may control the location 
+    outdir_default = parsed_args.image_path.parent
+    for (arg, path) in (relative_flags):
+        if (arg): outdir_default = path; break;
+    
+    print(f"relative-flags: {relative_flags}")
+    print(f"outdir-default: {outdir_default}")
+    
+    if ((out_path := parsed_args.output_dir) is None): out_path = ExplicitPath('.');
+    parsed_args.output_dir = out_path = (
+        outdir_default if (not parsed_args.output_dir) or out_path.is_empty
+        else out_path.under(toplevel) if parsed_args.relative_tmp
+        else out_path.under(pathlib.Path.cwd()) if parsed_args.relative_cwd or (out_path.explicit and not parsed_args.relative_img)
+        else out_path.under(parsed_args.image_path.parent) if parsed_args.relative_img or (out_path.relative and not parsed_args.relative_cwd)
+        else out_path
+    ).expanduser().resolve().absolute()
+    
+    print(f"(expanded) output_dir: '{parsed_args.output_dir}/'")
+    
+    if parsed_args.mkdir_parent: parsed_args.mkdir = True;
+    if not (mkdir_success := out_path.exists()):
+        if parsed_args.mkdir and (out_path.parent.exists() or parsed_args.mkdir_parent):
+            mkdir_success = True
+            out_path.mkdir(parents=parsed_args.mkdir_parent)
+            print(f"created output directory: '{out_path.name}'")
+        elif not out_path.parent.exists():
+            missing_parents = [*reversed([(highest := P).name for P in out_path.parents if not P.exists()])]
+            above_top = f".../{abv.name}" if ((abv := highest.parent).parent.parts != tuple(out_path.root,)) else ''
+            rel_miss = f"'{out_path.parent.name}/{out_path.name}' ({'/'.join([above_top, *missing_parents])}/)"
+            top_miss = f"'{highest.name}' ({highest.absolute()}/)"
+            print(f"[ERROR] cannot create parent of nested subdirectories: {rel_miss} under non-existent location: {top_miss}")
+            print(f"  specify '--mkdir-parent' to auto-create all missing subdirectories: {[*missing_parents, out_path.name]}")
+        elif not parsed_args.mkdir:
+            print(f"[ERROR] nonexistent output-directory: {out_path}")
+            print("  specify '--mkdir' to auto-create this directory")
+    if not out_path.exists(): print("  output-directory could not be created."); mkdir_success = False;
+    elif not out_path.is_dir(): print("  output-directory is not a directory."); mkdir_success = False;
+    if not mkdir_success: print("  exiting...\n"); exit(6)
+    
+    return out_path
+
+
+
 # GraphicsMagick does not provide any mechanism for specifying a relative-path for logfile, except for subdirectories under CWD.
 # variable-expansion / substitution does not appear to be possible. Changing the path at runtime does not seem (reasonably) possible.
 # If the path contains a directory, that directory must already exist, otherwise the logfile will simply not be written (silent failure; no warnings, of course)
@@ -415,8 +462,9 @@ def RotateMagickLogs(toplevel:pathlib.Path) -> pathlib.Path:
     :param toplevel: see 'Globals.TOPLEVEL_NAME'
     :return: path to log-directory """
     assert(toplevel.name == Globals.TOPLEVEL_NAME), "expected log-directory to be under toplevel"
-    assert(toplevel.is_relative_to("/tmp/")), "reminder to change path in 'log.mgk'";
-    # TODO: come up with some workaround to switch paths between toplevel under tmpdir/cwd. maintain a symlink under cwd?
+    #assert(toplevel.is_relative_to("/tmp/")), "reminder to change paths in 'log.mgk' and 'log.xml'";
+    # the configs' filepaths shouldn't matter as long as the 'output' option is not set to 'file'
+    # TODO: come up with some workaround to switch paths in the configs between tmpfs/cwd. maintain a symlink under cwd?
     
     new_logdir = toplevel / "magicklogs"
     if new_logdir.exists(): assert(new_logdir.is_dir()), "existing log-directory was not actually a directory!?"
@@ -547,10 +595,11 @@ def Main():
     assert(len(checksum) == 32), "MD5-hash did not match expected length"
     
     (workdir, wasNewlyCreated) = CreateTempdir(checksum, autodelete=args.autodelete, use_tmpfs=args.use_tmpfs)
-    if(workdir is None): print(f"no workdir. exiting"); exit(2); # tmpfs mount attempted and failed
-    assert(Globals.TEMPDIR_REF is not None)
-    if(not workdir.exists()): print("workdir does not exist!!!!"); os.sync();
-    if(not workdir.exists()): print("workdir does not exist!!!!"); exit(4)
+    if (workdir is None): print(f"no workdir. exiting"); exit(2); # tmpfs mount attempted and failed
+    assert(Globals.TEMPDIR_REF is not None); assert(workdir.exists());
+    
+    output_directory = ResolveOutputPath(args, workdir.parent)
+    print(f"output_directory resolved to: {output_directory}")
     
     log_directory = RotateMagickLogs(workdir.parent)
     (baseimg,srcimg) = MakeImageSources(workdir, args.image_path)
@@ -564,8 +613,8 @@ def Main():
     output_filename = f"{Globals.SRCIMG_PATH.with_suffix('').name}_RGB".removeprefix('srcimg_')
     # not using 'args.image_path' because that filename might be unsafe.
     print(f"output_filename: {output_filename}")
-    print(f"original directory: {args.image_path.parent.absolute()}")
-    print(f"final: {(args.output_dir / output_filename).absolute()}")
+    print(f"original location: {args.image_path.parent.absolute()}")
+    print(f"final: {(output_directory/output_filename).absolute()}")
     
     task = Task.TaskT(
         srcimg,
@@ -576,8 +625,8 @@ def Main():
         args.scales,
         'MIFF',
         output_filename,
-        args.output_dir,
-        args.fileformats,
+        output_directory,
+        args.output_formats,
     )
     
     expected_outputs = Task.FillExpectedOutputs(task)
@@ -619,4 +668,6 @@ def Main():
 
 
 if __name__ == "__main__":
+    print(f"program path: {Globals.PROGRAM_DIR}")
+    print(f"this file: {pathlib.Path(__file__)}")
     Main()
