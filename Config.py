@@ -69,7 +69,7 @@ def WriteConfig(config:dict, filename:str|None=None, backup_old:bool=True) -> pa
         print(f'[WARNING] config has empty "NAME"! using filename: "{config_name}"')
         config['NAME'] = config_name.removesuffix('.json')
     
-    cwd = pathlib.Path.cwd(); pwd = cwd.parent
+    pwd = Globals.PROGRAM_DIR.parent
     config_path = (CONFIG_DIR / f"{config_name}.json").expanduser().absolute()
     print(f"saving config: [{config_name}] -> {config_path.relative_to(pwd)}")
     
@@ -138,7 +138,7 @@ def WriteDefaultConfigs(overwrite_existing = False):
 
 
 def Init(write_default_configs = True, overwrite_existing = False):
-    global CONFIG_DIR; CONFIG_DIR = pathlib.Path.cwd() / CONFIG_DIRNAME
+    global CONFIG_DIR; CONFIG_DIR = Globals.PROGRAM_DIR / CONFIG_DIRNAME
     if not CONFIG_DIR.exists(): print(f"new config directory: '{CONFIG_DIR}'"); CONFIG_DIR.mkdir();
     assert(CONFIG_DIR.exists() and CONFIG_DIR.is_dir());
     
