@@ -24,6 +24,7 @@ DEBUG_PARSE_ONLY:bool|None = None # exit after parsing commandline args and Init
 DEBUG_PRINT_GLOBALS = None # print variables during init and 'RGB.PrintGlobals()'
 
 debug_flag_names = ("PRINT_CMDS", "PRINT_ONLY", "PARSE_ONLY", "PRINT_GLOBALS",)
+break_limits = {}; break_counts = {}
 
 def DBGFLAG(name:str, value:bool|None = None) -> bool|None:
     """lookup and return debug-flag by name. set value if specified."""
@@ -35,8 +36,11 @@ def DBGFLAG(name:str, value:bool|None = None) -> bool|None:
 def Break(name:str) -> None:
     """check debug-flag and conditionally exit."""
     if not DBGFLAG(ID := name.upper()): return;
-    print(f"[DEBUG_{ID}] early exit!")
-    exit(0)
+    break_counts[ID] = break_counts.get(ID,0)+1
+    if break_counts[ID] >= break_limits.get(ID,0):
+        print(f"[DEBUG_{ID}] exiting!!"); exit(0);
+    print(f"[DEBUG_{ID}_BREAK{break_counts[ID]}]")
+    return
 
 def ApplyDebugFlags(debug_flags: list):
     if (len(debug_flags) > 0): print(f"applying debug-flags: {debug_flags}");
@@ -44,10 +48,15 @@ def ApplyDebugFlags(debug_flags: list):
         print(f"[ERROR] input contains unrecognized debug-flags: {unknown}")
         raise NameError(f"[ApplyDebugFlags] invalid debug-flags: {unknown}")
     
+    global break_limits
     for flag_name in debug_flag_names:
         if not (wasPassed := (flag_name in debug_flags)) or (global_val := DBGFLAG(flag_name)): continue;
         if (global_val != (new_val := DBGFLAG(flag_name, wasPassed))): # 'wasPassed' is always True here.
+            # break_limits[flag_name] = 0; break_counts[flag_name] = 0 # reset if flag changed
             print(f"set debug_flag '{flag_name}': {new_val}")
+        limit = break_limits.get(flag_name,0)
+        limit += debug_flags.count(flag_name)
+        break_limits[flag_name] = limit
     
     # auto-enable 'DEBUG_PRINT_CMDS' when 'DEBUG_PRINT_ONLY'
     if (DEBUG_PRINT_ONLY and (not DEBUG_PRINT_CMDS)):
@@ -86,5 +95,8 @@ def UpdateGlobals(workdir:Path, srcimg:Path, logdir:Path, dbgprint: bool | None=
     print(f"WORKING_DIR: {WORKING_DIR}")
     print(f"SRCIMG_PATH: {SRCIMG_PATH}")
     print(f"LOGGING_DIR: {LOGGING_DIR}")
+    print("")
+    print(f"break_limits: {break_limits}")
+    print(f"break_counts: {break_counts}")
     print(f"{'='*100}\n")
     return

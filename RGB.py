@@ -7,8 +7,13 @@ def PrintGlobals(dbgprint:bool = False):
     """no-op unless dbgprint or DEBUG_PRINT_GLOBALS"""
     if not (dbgprint or Globals.DEBUG_PRINT_GLOBALS): return
     print(f"{'='*100}"); print("[printing globals]")
+    print(f"PROGRAM_DIR: {Globals.PROGRAM_DIR}")
     print(f"WORKING_DIR: {Globals.WORKING_DIR}")
     print(f"SRCIMG_PATH: {Globals.SRCIMG_PATH}")
+    print(f"TEMPDIR_REF: {Globals.TEMPDIR_REF}")
+    print("")
+    print(f"break_limits: {Globals.break_limits}")
+    print(f"break_counts: {Globals.break_counts}")
     print(f"{'='*100}\n")
     return
 
@@ -70,7 +75,7 @@ def EnumRotations(stepsize:float) -> list[tuple[str,str]]:
 
 def SaveCommand(filename: str, command:str|list[str], append:bool=False) -> pathlib.Path:
     """ writes/appends commands to file; returns written filepath"""
-    cmdlist = (command if(type(command) is list) else [command]); del command
+    cmdlist = (command if(isinstance(command, list)) else [command]); del command;
     workdir = Globals.WORKING_DIR; assert (workdir.exists() and workdir.is_dir());
     cmd_dir = workdir/"batchfile"; cmdfile = Globals.WORKING_DIR/cmd_dir/filename;
     if not cmd_dir.exists(): cmd_dir.mkdir(); assert(cmd_dir.is_dir());

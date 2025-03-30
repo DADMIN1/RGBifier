@@ -24,38 +24,58 @@ def FilterText(text:str) -> str:
 
 
 def PrintDict(D:dict, name=None):
-    if name is not None: print(f"{name} = "+"{");
+    if name is not None: print(f"{name} = "+"{ ");
     for (k,v) in D.items(): print(f"  {k}: {v},");
-    if name is not None: print("}\n")
+    if name is not None: print("}\n");
 
 
 class ExplicitPath(pathlib.Path):
     """Path which differentiates explicit and implicit relativity, and preserves any single-dots ('.') within input"""
     def __init__(self, *args):
-        self.argz = tuple((arg.argz if type(arg) is ExplicitPath else arg) for arg in args)
-        self.is_empty = ((not self.argz) or (self.argz[0] is None) or (not self.argz[0].strip()))
-        self.is_absol = (self.argz[0].strip().startswith('/') or pathlib.Path(*self.argz).expanduser().is_absolute())
-        self.explicit = (self.argz[0].strip().split('/')[0] in ('.','..')) or self.argz[0].strip().startswith('./')
-        self.relative = self.explicit or not self.is_absol
-        super().__init__(*self.argz)
+        (self.argzero, self.argz) = tuple(
+            (str(args[0]).strip(), ''.join(str(arg).strip() for arg in args))
+            if bool(args) else ('','')
+        )
+        self.is_empty = (not args) or (not self.argz) or (not self.argzero)
+        self.is_absol = self.argzero.startswith(('/','~')) or pathlib.Path(self.argz).expanduser().is_absolute()
+        self.explicit = self.argzero.startswith(('.','..','./'))
+        self.relative = self.explicit or ((not self.is_absol) and (not self.is_empty))
+        super().__init__(self.argz)
+    
+    def __str__(self):  return self.argz;
+    def __repr__(self): return f"ExplicitPath('{self.argz}')";
+    def PrintDict(self): PrintDict(self.__dict__, repr(self));
     
     def under(self, newparent:pathlib.Path):
         if self.is_empty: return newparent;
         top_parent = (self.parents[-1] if (len(self.parents) > 0) else '/')
         return newparent.joinpath(
-            pathlib.Path(*self.argz).relative_to(top_parent)
-            if (self.is_absol) else pathlib.Path(*self.argz)
+            pathlib.Path(self.argz).relative_to(top_parent)
+            if (self.is_absol) else pathlib.Path(self.argz)
         )
     
     # division operator: (path / str|path)
     def __truediv__(self, key:str|pathlib.Path) -> pathlib.Path:
         if self.is_empty: return pathlib.Path(key);
-        return pathlib.Path(*self.argz).joinpath(key)
+        try: return pathlib.Path(self.argz).joinpath(key);
+        except TypeError: return NotImplemented;
     
-    # unused?
     def __rtruediv__(self, key:str|pathlib.Path):
         if self.is_empty: return pathlib.Path(key);
-        return self.under(key)
+        try: return self.under(pathlib.Path(key));
+        except TypeError: return NotImplemented;
+
+
+#valid_fileformats
+class FormatList():
+    """String-list with lenient (caseless) comparisons and inclusion-rules"""
+    def __init__(self, *strings:str): self.strings = tuple((S.upper() for S in strings));
+    def __contains__(self,other:str): return (other.lstrip('.').upper() in self.strings); # operator 'in'
+    def __eq__(self,other:str):       return (other.lstrip('.').upper() in self.strings);
+    def __repr__(self): return repr((*self.strings, *(S.lower() for S in self.strings))); # display for debugger/interpreter
+    def __str__(self):  return str(self.strings);  # display for print() and str()
+    def __iter__(self): return self.strings.__iter__(); # using argparse 'choices'
+    def __getitem__(self, at): return self.strings.__getitem__(at); # []-subscript
 
 
 # custom formatter_class combining the behavior of two arparse formatters
@@ -86,8 +106,8 @@ def ParseCmdline(arglist:list[str]|None = None) -> argparse.Namespace:
     #group_system.add_argument("--autodelete", dest="autodelete", action="store_true", default=True, help="wipe the (temp) working directory after processing")
     group_system.add_argument("--noclean", dest="autodelete", action="store_false", help="preserve temp-files (deleted by default - ignore the following 'default' message)")
     # TODO: fix the display of '--noclean'/autodelete's default message
-    group_system.add_argument("--print-only", action="store_true", help="exit after printing the commands that would have been executed")
-    group_system.add_argument("--parse-only", action="store_true", help="exit after completing commandline parsing (and loading config)")
+    group_system.add_argument("--print-only", nargs='?', metavar="limit", type=int, const=1, help="exit after printing the commands that would have been executed")
+    group_system.add_argument("--parse-only", nargs='?', metavar="limit", type=int, const=1, help="exit after completing commandline parsing (and loading config)")
     
     group_output.add_argument("--mkdir", action="store_true", help="create output-directory if necessary (all parents must already exist)")
     group_output.add_argument("--mkdir-parent", action="store_true", help="mkdir also creates any missing parent-directories (implies '--mkdir')")
@@ -124,15 +144,10 @@ def ParseCmdline(arglist:list[str]|None = None) -> argparse.Namespace:
     primary_args.add_argument("output_dir", type=ExplicitPath, metavar="DIRECTORY", nargs='?', help="output location - same as input by default")
     primary_args.add_argument("--stepsize", type=float, default=1.00, metavar='(float)', help="modulation per frame - 1/200th of full cycle")
     
-    base_format_names = ("GIF", "MP4", "APNG", "WEBP", "ALL")
-    valid_fileformats = [*base_format_names]
-    # allow file-formats to be specified in lowercase and/or with leading '.'
-    valid_fileformats.extend([FMT.lower() for FMT in valid_fileformats])
-    valid_fileformats.extend([f".{FMT}" for FMT in valid_fileformats])
-    
+    valid_fileformats = FormatList("GIF", "MP4", "APNG", "WEBP", "ALL")
     group_output.add_argument("--format", dest="output_formats", metavar="fmt",
         choices=valid_fileformats, nargs='+', action='append', default=["GIF"],
-        help=f"list of output formats: {base_format_names}\n"
+        help=f"list of output formats: {valid_fileformats}\n"
         +"names can be in lowercase and may have a leading dot ('.gif')\n"
         +"animated WebP specifically requires ImageMagick (--magick=IM)\n"
         +"MP4 and APNG outputs require ffmpeg"
@@ -149,7 +164,7 @@ def ParseCmdline(arglist:list[str]|None = None) -> argparse.Namespace:
     parsed_args.output_formats = [*set(fmt.upper().removeprefix('.') for fmt in parsed_args.output_formats)]
     if ("ALL" in parsed_args.output_formats):
         lastindex = (3 if (parsed_args.magick == "GM") else 4) # GM won't include 'WEBP'
-        parsed_args.output_formats = [fmt.upper() for fmt in base_format_names[:lastindex]]
+        parsed_args.output_formats = [fmt.upper() for fmt in valid_fileformats[:lastindex]]
     print(f"selected output-filetypes: {parsed_args.output_formats}")
     
     if (("WEBP" in (formats := parsed_args.output_formats)) and (parsed_args.magick == "GM")):
@@ -158,15 +173,16 @@ def ParseCmdline(arglist:list[str]|None = None) -> argparse.Namespace:
         else: print("automatically switching to ImageMagick backend"); parsed_args.magick="IM"; # when no other format was selected
     print("")
     
-    # assert(type(parsed_args.fps) is int)
+    # assert(isinstance(parsed_args.fps, int))
     assert(parsed_args.stepsize != 0), "stepsize must not be zero"
     assert(len(parsed_args.output_formats) > 0), "missing output format"
     assert(all([(fmt in valid_fileformats) for fmt in parsed_args.output_formats])), "invalid format after processing cmdline"
     if not parsed_args.image_path.exists(): print(f"[ERROR] non-existent input_path: [{parsed_args.image_path}]"); exit(1);
     
     Globals.MAGICKLIBRARY = parsed_args.magick; debug_flags = []
-    if parsed_args.print_only: debug_flags.append("PRINT_ONLY");
-    if parsed_args.parse_only: debug_flags.append("PARSE_ONLY");
+    def Extend(S, C): debug_flags.extend([S for _ in range(C)]);
+    if (FC := parsed_args.print_only): Extend("PRINT_ONLY", FC);
+    if (FC := parsed_args.parse_only): Extend("PARSE_ONLY", FC);
     if (len(debug_flags)): Globals.ApplyDebugFlags(debug_flags);
     
     print(parsed_args) # Namespace(...)
@@ -270,9 +286,7 @@ def SetupENV(alt_defaults:dict) -> dict:
     else: print(f"[WARNING] bad path for 'MAGICK_CONFIGURE_PATH': {config_dir}");
     
     # "MAGICK_TMPDIR" might be GM-only?
-    # parent_tmp = wdir.parent if (wdir := Globals.WORKING_DIR).is_relative_to('/tmp/') else pathlib.Path("/tmp/RGB_TOPLEVEL/")
-    parent_tmp = pathlib.Path("/tmp/RGB_TOPLEVEL/") # TODO: TMPDIR has not been initialized yet (CreateTempdir is called later)
-    magick_tmp = pathlib.Path(os.getenv("MAGICK_TMPDIR", (parent_tmp / f"TEMP_{Globals.MAGICKLIBRARY}/").absolute()))
+    magick_tmp = pathlib.Path(os.getenv("MAGICK_TMPDIR", (Globals.WORKING_DIR.parent / f"TEMP_{Globals.MAGICKLIBRARY}/").absolute()))
     if (magick_tmp.is_dir()): final_env["MAGICK_TMPDIR"] = str(magick_tmp);
     else: print(f"[WARNING] invalid env 'MAGICK_TMPDIR': {magick_tmp}");
     
@@ -573,11 +587,11 @@ def SubCommand(cmdline:list[str]|str, logname:str|None = "main", isCmdSequence:b
     
     # mode='a' - append to existing file, or create new
     with log_filepath.open(mode='a', encoding="utf-8") as logfile:
-        cmdline_str = (cmdline if (type(cmdline) is str) else ("\n" if isCmdSequence else " ").join(cmdline))
+        cmdline_str = (cmdline if isinstance(cmdline,str) else ("\n" if isCmdSequence else " ").join(cmdline))
         logfile.write(cmdline_str); logfile.write("\n\n"); logfile.flush()
         cmd_seq = (cmdline if isCmdSequence else [cmdline])
         for cmd in cmd_seq:
-            completed = subprocess.run(cmd, check=True, stdout=None, stderr=(logfile if not skiplog else None), encoding="utf-8", shell=(type(cmd) is str)) # prints stdout, logs stderr
+            completed = subprocess.run(cmd, check=True, stdout=None, stderr=(logfile if not skiplog else None), encoding="utf-8", shell=(isinstance(cmd,str))) # prints stdout, logs stderr
         if (completed.returncode != 0): print(f"[ERROR] nonzero exit-status: {completed.returncode}\n");
         logfile.write('_'*120); logfile.write("\n\n")
     
@@ -585,10 +599,9 @@ def SubCommand(cmdline:list[str]|str, logname:str|None = "main", isCmdSequence:b
     return
 
 
-def Main():
+def Main(identify_srcimg=False):
     (conf_cmdline_args, conf_env_defaults) = Config.Init()
     args = ParseCmdline(conf_cmdline_args); Globals.Break("PARSE_ONLY")
-    env_vars = SetupENV(conf_env_defaults)
     
     image_md5sum = subprocess.check_output(["md5sum", str(args.image_path)])
     checksum = str(image_md5sum, encoding="utf-8").split()[0]
@@ -600,15 +613,20 @@ def Main():
     
     output_directory = ResolveOutputPath(args, workdir.parent)
     print(f"output_directory resolved to: {output_directory}")
+    Globals.Break("PARSE_ONLY") # select with '--parse-only 2'
     
     log_directory = RotateMagickLogs(workdir.parent)
     (baseimg,srcimg) = MakeImageSources(workdir, args.image_path)
     Globals.UpdateGlobals(workdir, srcimg, log_directory) # dbgprint=True
     RGB.PrintGlobals() # no-op unless DEBUG_PRINT_GLOBALS / dbgprint
     
-    print(baseimg); print(srcimg); print(f"\n{'_'*120}\n")
-    SubCommand(f"{('gm convert -list resources' if (Globals.MAGICKLIBRARY=="GM") else 'identify -list resource')}", logname=None)
-    SubCommand(f"{('gm ' if (Globals.MAGICKLIBRARY=="GM") else '')}identify -verbose {str(srcimg)}", logname=None)
+    # must be called after UpdateGlobals (needs Globals.WORKING_DIR)
+    env_vars = SetupENV(conf_env_defaults)
+    
+    if identify_srcimg:
+        print(baseimg); print(srcimg); print(f"\n{'_'*120}\n")
+        SubCommand(f"{('gm convert -list resources' if (Globals.MAGICKLIBRARY=="GM") else 'identify -list resource')}", logname=None)
+        SubCommand(f"{('gm ' if (Globals.MAGICKLIBRARY=="GM") else '')}identify -verbose {str(srcimg)}", logname=None)
     
     output_filename = f"{Globals.SRCIMG_PATH.with_suffix('').name}_RGB".removeprefix('srcimg_')
     # not using 'args.image_path' because that filename might be unsafe.
