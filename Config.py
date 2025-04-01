@@ -92,9 +92,12 @@ def WriteConfig(config:dict, filename:str|None=None, backup_old:bool=True) -> pa
 def ApplyConfig(config:dict) -> (bool, tuple):
     """ :return: flag indicating success/failure and parsed variables """
     success = True; config_name = config.pop("NAME", None) # pop for 'unrecognized_entries' below
-    print(f"parsing config: '{config_name}'"); print(f"{'_'*120}\n")
-    print(json.dumps(config, indent=2))
-    print(f"\n{'_'*120}\n")
+    print(f"parsing config: '{config_name}'")
+    if (len(config.keys()) == 0): print(f"'{config_name}' is empty!");
+    else:
+        print(f"{'_'*120}\n{config_name}:")
+        print(json.dumps(config, indent=2))
+        print(f"\n{'_'*120}\n")
     
     unrecognized_entries = [K for K in config.keys() if (K not in config_entries.keys())]
     
@@ -113,7 +116,7 @@ def ApplyConfig(config:dict) -> (bool, tuple):
     return (success, (cmdline_args, env_defaults))
 
 
-def WriteDefaultConfigs(overwrite_existing = False):
+def WriteDefaultConfigs(overwrite_existing = False, do_backup:bool=True):
     assert(CONFIG_DIR.exists() and CONFIG_DIR.is_dir());
     default_config_files = { 
         "main_config": default_config.copy(),
@@ -131,13 +134,13 @@ def WriteDefaultConfigs(overwrite_existing = False):
             reason = ("MISSING" if (not config_path.exists()) else "OVERWRITING")
             STR = f"{name if (name := config.get('NAME', '')) else 'empty_config'}"
             print(f"{reason}: '{config_path.name}' [{STR}]")
-            WriteConfig(config, config_path.name); print('')
+            WriteConfig(config, config_path.name, do_backup); print('')
     
     if anyMissing: print("finished writing default-configs.\n")
     return
 
 
-def Init(write_default_configs = True, overwrite_existing = False):
+def Init(write_default_configs = False, overwrite_existing = False):
     global CONFIG_DIR; CONFIG_DIR = Globals.PROGRAM_DIR / CONFIG_DIRNAME
     if not CONFIG_DIR.exists(): print(f"new config directory: '{CONFIG_DIR}'"); CONFIG_DIR.mkdir();
     assert(CONFIG_DIR.exists() and CONFIG_DIR.is_dir());
@@ -151,3 +154,13 @@ def Init(write_default_configs = True, overwrite_existing = False):
     if not conf_apply_success: print(f"[ERROR] failed to apply config"); exit(7);
     
     return (conf_cmdline_args, conf_env_defaults)
+
+
+if __name__ == "__main__":
+    CONFIG_DIR = Globals.PROGRAM_DIR / CONFIG_DIRNAME
+    if not CONFIG_DIR.exists(): print(f"new config directory: '{CONFIG_DIR}'"); CONFIG_DIR.mkdir();
+    assert(CONFIG_DIR.exists() and CONFIG_DIR.is_dir());
+    
+    print(f"writing default configs...")
+    WriteDefaultConfigs(overwrite_existing=True, do_backup=False)
+    print(f"done")

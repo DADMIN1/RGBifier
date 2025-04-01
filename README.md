@@ -12,7 +12,7 @@ output will be written into the same directory as the original image \
 CLI.py --help
 
 On startup, the script looks for 'main_config.json' under the 'configs_RGBifier' directory. \
-An empty config will be created if none exists.
+run 'Config.py' to create/reset config files.
 See the [example config](/configs_RGBifier/main_config.example.json) for keys/values
 
 
