@@ -190,3 +190,24 @@ def GenerateCommands(stepsize:float, writeMPC:bool=True, writePNG:bool=False, wr
 # TODO: handle GIF/video inputs (divide into frames and interpolate between them)
 # TODO: gif needs options for default-delay and ignore-loop
 # TODO: hwaccel with ffmpeg
+
+
+def convertCMD(srcimg:pathlib.Path, cmd_mid:str, out_name:str, fmt_in='png', fmt_out='png'):
+    outpath = Globals.WORKING_DIR / f"{out_name}.{fmt_out.lower()}"
+    convert = f"convert '{fmt_in.upper()}:{srcimg}' {cmd_mid} '{fmt_out.upper()}:{outpath}'"
+    return (convert, outpath)
+
+# 0x00FF00AA -> "'#00FF00AA'"
+def HexString(num:int): return "'#{:08X}'".format(num);
+
+# input hex-strings must be length 8, or the value will be shifted due to padding in HexString
+def RecolorStr(old:str, new:int|str):
+    new = (HexString(new) if isinstance(new, int) else HexString(int(new,16)) if new.startswith('0x') else new.title())
+    return f"-fill {new} -opaque {old.title()}"
+
+def EdgeHighlight(srcimg:pathlib.Path, edge_color:int|str, edge_radius=2) -> tuple[str, pathlib.Path]:
+    """returns recolor-command and output path"""
+    recolor_str = f"{RecolorStr('Black', 'Transparent')} {RecolorStr('White', edge_color)}"
+    # saturation 0% and fuzz 100% to isolate all the non-white pixels
+    recolor_mid = f"-modulate 100,0 -edge {edge_radius} -fuzz 100% {recolor_str}"
+    return convertCMD(srcimg, recolor_mid, "srcimg_edge")

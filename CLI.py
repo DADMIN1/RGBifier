@@ -74,6 +74,10 @@ class FormatList():
 class CustomFormatter(argparse.RawTextHelpFormatter, argparse.ArgumentDefaultsHelpFormatter):
     def __init__(self, prog): super().__init__(prog, indent_increment=2, max_help_position=32, width=70);
 
+# argparse.MetavarTypeHelpFormatter (default metavar = type) always fails with this error:
+# "AttributeError: 'NoneType' object has no attribute '__name__'. Did you mean: '__ne__'?"
+# seemingly triggered by any option without a 'type' specified (like any transform option)
+
 
 def ParseCmdline(arglist:list[str]|None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -89,7 +93,9 @@ def ParseCmdline(arglist:list[str]|None = None) -> argparse.Namespace:
     group_relopt = grp_relative.add_mutually_exclusive_group()
     # group_relopt = group_output.add_mutually_exclusive_group()
     grp_transform = parser.add_argument_group("transformations")
+    group_recolor = parser.add_argument_group("color-remapping")
     
+    group_recolor.description = "these features are only usable with GraphicsMagick"
     # grp_relative.title = None # prevents title from printing; leaving a single empty line above group
     
     group_system.add_argument("--magick", choices=["IM","GM"], default="GM", help="select magick library (ImageMagick / GraphicsMagick)")
@@ -123,6 +129,21 @@ def ParseCmdline(arglist:list[str]|None = None) -> argparse.Namespace:
     grp_transform.add_argument("--scale", nargs=1, dest="scales", action="extend", metavar="{int[%]|float[x]}")
     grp_transform.add_argument("--scales", nargs='+', action="extend", default=[], metavar="{int[%]|float[x]}", help=scale_help)
     
+    def StrHex(num:str): return "0x{:08X}".format(int(f"{num}{'0'*(8-len(num.removeprefix('0x')))}",16));
+    def MaybePercent(num:str):
+        num = int(float(num)*100) if ('.' in num) else int(num.removesuffix('%'))
+        if ((num < 0) or (num > 100)): raise Exception(f"invalid percent: {num}");
+        return num
+    
+    group_recolor.add_argument("--edge", metavar="RRGGBB[AA]", type=StrHex, nargs='?', const="0x00FF00", help="edge-detection (default color: 0x00FF00)")
+    group_recolor.add_argument("--edge-radius", metavar="int", type=int, default=2, help="edge-detection radius")
+    # the lambda given for 'type' allows lowercase letters to be passed
+    group_recolor.add_argument("--remap", choices=['W','B','WB','BW'], type=lambda S:S.upper(), help="recolor white and/or black areas")
+    group_recolor.add_argument("--fuzz", metavar="int[%]", type=MaybePercent, nargs=2, default=(10, 50), help="fuzz-percent for white and black")
+    group_recolor.add_argument("--white", metavar="RRGGBB[AA]", type=StrHex, default="0xFF0000", help="remapped white")
+    group_recolor.add_argument("--black", metavar="RRGGBB[AA]", type=StrHex, default="0x0000FF", help="remapped black")
+    
+    if ('--help' in arglist): parser.print_help(); print('\n'); exit(0);
     parsed_args = None; print("\nparsing args...")
     if ((arglist is not None) and (len(arglist) > 0)):
         print(f"additional args given: {arglist}")
@@ -176,6 +197,14 @@ def ParseCmdline(arglist:list[str]|None = None) -> argparse.Namespace:
     if (FC := parsed_args.parse_only): Extend("PARSE_ONLY", FC);
     if (len(debug_flags)): Globals.ApplyDebugFlags(debug_flags);
     
+    if (parsed_args.edge or parsed_args.remap):
+        if(parsed_args.magick=='IM'): print("[ERROR] edge and color-remapping are GraphicsMagick-only"); exit(3);
+        assert(all([(percent >= 0) and (percent <= 100) for percent in parsed_args.fuzz])), "invalid fuzz percent!";
+    
+    if parsed_args.remap:
+        if ('W' not in parsed_args.remap): parsed_args.white = None;
+        if ('B' not in parsed_args.remap): parsed_args.black = None;
+     
     print(parsed_args) # Namespace(...)
     PrintDict(parsed_args.__dict__, "args")
     return parsed_args
@@ -250,3 +279,6 @@ def ResolveOutputPath(parsed_args:argparse.Namespace, toplevel:pathlib.Path):
     
     return out_path
 
+
+if __name__ == "__main__":
+    ParseCmdline(["--help"])

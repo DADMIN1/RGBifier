@@ -386,6 +386,12 @@ def Main(identify_srcimg=False):
     print(f"original location: {args.image_path.parent.absolute()}")
     print(f"final: {(output_directory/output_filename).absolute()}")
     
+    
+    color_opts = Task.ColorRemapT(
+        (args.white, args.black) if args.remap else None,
+        args.fuzz, args.edge, args.edge_radius,
+    )
+    
     task = Task.TaskT(
         srcimg,
         workdir,
@@ -393,11 +399,19 @@ def Main(identify_srcimg=False):
         args.crop,
         args.gravity,
         args.scales,
+        color_opts,
         'MIFF',
         output_filename,
         output_directory,
         args.output_formats,
     )
+    
+    new_srcimg = Task.ImagePreprocess(task)
+    if (new_srcimg is not None):
+        print(f"[ImagePreprocess] new srcimg path: {new_srcimg}")
+        Globals.UpdateGlobals(workdir, new_srcimg, log_directory)
+        print(f"updated srcimg path: {srcimg} -> {new_srcimg}\n")
+        # srcimg = new_srcimg
     
     expected_outputs = Task.FillExpectedOutputs(task)
     print('\n'); assert(len(expected_outputs) > 0), "no expected outputs"

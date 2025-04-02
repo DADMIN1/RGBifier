@@ -1,19 +1,39 @@
 import pathlib
 
+import Globals
+import RGB
+
+
+class ColorRemapT():
+    def __init__(self,
+        whiteBlack:tuple[str|None,str|None]|None,
+        wb_fuzzing:tuple[int,int],
+        edge_color:str|None,
+        edgeRadius:int):
+      self.whiteBlack = whiteBlack
+      self.wb_fuzzing = wb_fuzzing
+      self.edge_color = edge_color
+      self.edgeRadius = edgeRadius
+      if self.whiteBlack is not None:
+        assert(Globals.MAGICKLIBRARY == 'GM'), "color-replacement is GraphicsMagick-only"
+        assert(all([(percent >= 0) and (percent <= 100) for percent in self.wb_fuzzing]))
+      return
+
 
 class TaskT():
-  def __init__(self, 
-        srcimg:pathlib.Path,
+  def __init__(self,
+        baseimg:pathlib.Path,
         workdir:pathlib.Path,
         checksum:str,
         crop:str|None, grav:str,
         rescales:list[str]|None,
+        color_options:ColorRemapT,
         frame_format:str,
         output_filename:str,
         output_directory:pathlib.Path,
         output_fileformats:list[str],
     ):
-    self.image_source = srcimg
+    self.image_source = baseimg
     self.image_md5sum = checksum
     self.working_path = workdir
     self.primary_format = frame_format
@@ -24,16 +44,24 @@ class TaskT():
     self.crop = ParseCrop(crop, grav)
     self.rescales = (rescales if(rescales is not None) else ['100%'])
     
+    (
+      self.whiteBlack,
+      self.wb_fuzzing,
+      self.edge_color,
+      self.edgeRadius,
+    ) = color_options.__dict__.values()
+    
     self.frame_formats = [ frame_format, ]
     if (('APNG' in output_fileformats) or ('MP4' in output_fileformats)): self.frame_formats.append('PNG');
     
-    self.image_preprocess = [] # scaled and/or cropped
+    self.did_preprocess_img = False
+    self.image_preprocessed = None # output-path of ImagePreprocess; if edge-color or whiteBlack-remapping are enabled
+    self.preprocessing_list = [] # tuple of (commands, output_path) - outputs are color-swapped, scaled and/or cropped
     self.expected_outputs = []
     
     assert(frame_format in ('MPC', 'MIFF'))
     assert(output_filename.endswith('_RGB'))
     assert(output_directory.exists() and output_directory.is_dir())
-    
     return
 
 
@@ -145,8 +173,9 @@ def FillExpectedOutputs(task:TaskT) -> list[str]:
             print(f"final destination: '{final_destination.absolute()}'")
             task.expected_outputs.append((FMT, (scaleval,scalestr),final_destination))
     
+    NL = '\n  '
     dests = sorted([expected[-1] for expected in task.expected_outputs] )
-    print(f"expected outputs: {'\n  '.join(str(x.name) for x in dests)}")
+    print(f"expected outputs: {NL}{NL.join(str(x.name) for x in dests)}")
     return task.expected_outputs
 
 
@@ -160,19 +189,51 @@ def CheckExpectedOutputs(task:TaskT) -> list[tuple[pathlib.Path,pathlib.Path]]:
     return results
 
 
-def ImagePreprocess(task:TaskT):
-    src_img = task.image_source
+def ImagePreprocess(task:TaskT) -> pathlib.Path | None:
+    baseimg = task.image_source
     workdir = task.working_path
+    task.image_preprocessed = None
+    task.preprocessing_list.clear()
     scales = ParseScales(task.rescales)
-    task.image_preprocess.clear()
+    
+    current_img = baseimg
+    if task.whiteBlack is not None:
+        for (new_color, fuzzpcent, colorname) in zip(task.whiteBlack, task.wb_fuzzing, ('white','black')):
+            if new_color is None: continue;
+            outpath = workdir / f"srcimg_replace_{colorname}.png"
+            replace_cmd = f"convert 'PNG:{current_img}' -fuzz {fuzzpcent}% {RGB.RecolorStr(colorname, new_color)} 'PNG:{outpath}'"
+            task.preprocessing_list.append((replace_cmd, outpath))
+            current_img = outpath # 'replace_white.png' is used as base for 'replace_black.png'
+        
+        if (current_img != baseimg):
+            compositepath = workdir / f"srcimg_WB_recolor.png"
+            composite_cmd = f"composite 'PNG:{current_img}' 'PNG:{baseimg}' -compose Atop 'PNG:{compositepath}'"
+            task.preprocessing_list.append((composite_cmd, compositepath))
+            current_img = compositepath # keep as base for edge-highlight
+        # the last composite only exists to discard the transparency that always gets filled by replace_black
+        # for some reason, replacing 'Black' will also fill all transparent regions - replacing white doesn't
+        # (the same behavior occurs when hex codes are used instead of name; #000000 / #000000FF / #00000000)
+    
+    if task.edge_color is not None:
+        (recolor_cmd, edge_image) = RGB.EdgeHighlight(baseimg, task.edge_color, task.edgeRadius) # edge-detect baseimg, NOT current
+        task.preprocessing_list.append((recolor_cmd, edge_image))
+        baseimg = current_img; current_img = edge_image
+        # ^ preserving 'replace_black.png' in baseimg for final composite
+    
+    if (current_img != baseimg): # final composite and updating task.image_source
+        final_output = workdir / "srcimg_preprocessed.png"
+        compositecmd = f"composite 'PNG:{current_img}' 'PNG:{baseimg}' -compose Atop 'PNG:{final_output}'"
+        task.preprocessing_list.append((compositecmd, final_output))
+        task.image_preprocessed = current_img = final_output
     
     for (scale_value, scale_suffix) in scales:
         scale_text = ('' if (scale_value == 100) else f"-scale {scale_value}%")
         new_img = workdir/f"srcimg{scale_suffix}.{task.primary_format.lower()}"
-        command = f"convert 'PNG:{src_img}' {task.crop} -strip {scale_text} '{task.primary_format.upper()}:{new_img}'"
-        task.image_preprocess.append((new_img, command))
+        command = f"convert 'PNG:{current_img}' {task.crop} -strip {scale_text} '{task.primary_format.upper()}:{new_img}'"
+        task.preprocessing_list.append((command, new_img))
     
-    return task.image_preprocess
+    task.did_preprocess_img = True
+    return task.image_preprocessed # still None unless edge/WB-recoloring was performed
 
 
 # expects parsed scale-strings (Task.ParseScales)
@@ -205,12 +266,17 @@ def GenerateFrames(task:TaskT, enumRotations:list[tuple[str,str]]) -> tuple[list
     
     scales = ParseScales(task.rescales)
     directories = SetupFramesDirectories(task, scales)
-    preprocessing = ImagePreprocess(task)
     
-    preprocess_commands = []
-    for (src_img, command) in preprocessing:
-        if src_img.exists(): print(f"skipping preprocessing (already exists): '{src_img}'"); continue;
-        preprocess_commands.append(command)
+    preprocess_commands = (
+        [] if (not task.did_preprocess_img) else
+        [C for (C,_) in task.preprocessing_list]
+    )
+    if (not task.did_preprocess_img):
+        new_srcimg = ImagePreprocess(task) # TODO: need to update global SRCIMG?
+        for (command, out_img) in task.preprocessing_list:
+            # if out_img == final_img: preprocess_commands.append(command); continue;
+            # if out_img.exists(): print(f"skipping preprocessing (already exists): '{out_img}'"); continue;
+            preprocess_commands.append(command)
     
     # PNG frames should just be directly converted from the primary format (MPC/MIFF)
     # only generate frames for primary format; frames in other formats will be converted from these
