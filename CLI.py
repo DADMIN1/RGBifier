@@ -95,7 +95,6 @@ def ParseCmdline(arglist:list[str]|None = None) -> argparse.Namespace:
     grp_transform = parser.add_argument_group("transformations")
     group_recolor = parser.add_argument_group("color-remapping")
     
-    group_recolor.description = "these features are only usable with GraphicsMagick"
     # grp_relative.title = None # prevents title from printing; leaving a single empty line above group
     
     group_system.add_argument("--magick", choices=["IM","GM"], default="GM", help="select magick library (ImageMagick / GraphicsMagick)")
@@ -129,11 +128,27 @@ def ParseCmdline(arglist:list[str]|None = None) -> argparse.Namespace:
     grp_transform.add_argument("--scale", nargs=1, dest="scales", action="extend", metavar="{int[%]|float[x]}")
     grp_transform.add_argument("--scales", nargs='+', action="extend", default=[], metavar="{int[%]|float[x]}", help=scale_help)
     
-    def StrHex(num:str): return "0x{:08X}".format(int(f"{num}{'0'*(8-len(num.removeprefix('0x')))}",16));
+    # GraphicsMagick - alpha '00'->opaque, 'FF'->transparent; default alpha is opaque
+    def StrHexGM(num:str): return "0x{:08X}".format(int(f"{num}{'0'*(8-len(num.removeprefix('0x')))}",16));
+    def StrHexIM(num:str): # ImageMagick - alpha '00'->transparent, 'FF'->opaque
+        count = len(num.removeprefix('0x')); alphaLength = max(8-count, 0)
+        FL = min(alphaLength, 2); alpha = ('0' * max((alphaLength-FL), 0))+('F' * FL)
+        return f"0x{hex(int(num, 16)).removeprefix('0x').upper().zfill(count)}{alpha}"
+    
+    def StrHex(num:str): return (StrHexIM(num), StrHexGM(num)); # need both until we know which library
+    
     def MaybePercent(num:str):
         num = int(float(num)*100) if ('.' in num) else int(num.removesuffix('%'))
         if ((num < 0) or (num > 100)): raise Exception(f"invalid percent: {num}");
         return num
+    
+    group_recolor.description = textwrap.dedent("""\
+        keep in mind that Alpha-channel value is interpreted differently by each library
+        colors passed on the command-line (without alpha specified) will be opaque,
+        but no conversion will be performed when the color has a specified alpha.
+        
+        Alpha: [opaque -> transparent] || ImageMagick: [FF -> 00] || GraphicsMagick: [00 -> FF]"""
+    )
     
     group_recolor.add_argument("--edge", metavar="RRGGBB[AA]", type=StrHex, nargs='?', const="0x00FF00", help="edge-detection (default color: 0x00FF00)")
     group_recolor.add_argument("--edge-radius", metavar="int", type=int, default=2, help="edge-detection radius")
@@ -197,11 +212,16 @@ def ParseCmdline(arglist:list[str]|None = None) -> argparse.Namespace:
     if (FC := parsed_args.parse_only): Extend("PARSE_ONLY", FC);
     if (len(debug_flags)): Globals.ApplyDebugFlags(debug_flags);
     
-    if (parsed_args.edge or parsed_args.remap):
-        if(parsed_args.magick=='IM'): print("[ERROR] edge and color-remapping are GraphicsMagick-only"); exit(3);
-        assert(all([(percent >= 0) and (percent <= 100) for percent in parsed_args.fuzz])), "invalid fuzz percent!";
+    if (parsed_args.edge):
+        parsed_args.edge = parsed_args.edge[0 if (parsed_args.magick=='IM') else 1]
+        assert(L:=len(H:=(parsed_args.edge.removeprefix('0x')))==8), f"edgecolor hex '{H}' has invalid length: {L}";
     
-    if parsed_args.remap:
+    if (parsed_args.remap):
+        parsed_args.white = parsed_args.white[0 if (parsed_args.magick=='IM') else 1]
+        parsed_args.black = parsed_args.black[0 if (parsed_args.magick=='IM') else 1]
+        for S in (parsed_args.white, parsed_args.black):
+            assert(L:=len(S.removeprefix('0x')) == 8), f"color-hexcode '{S}' has invalid length: {L}";
+        assert(all([(percent >= 0) and (percent <= 100) for percent in parsed_args.fuzz])), "invalid fuzz percent!";
         if ('W' not in parsed_args.remap): parsed_args.white = None;
         if ('B' not in parsed_args.remap): parsed_args.black = None;
      

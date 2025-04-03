@@ -1,6 +1,4 @@
 import pathlib
-
-import Globals
 import RGB
 
 
@@ -15,7 +13,6 @@ class ColorRemapT():
       self.edge_color = edge_color
       self.edgeRadius = edgeRadius
       if self.whiteBlack is not None:
-        assert(Globals.MAGICKLIBRARY == 'GM'), "color-replacement is GraphicsMagick-only"
         assert(all([(percent >= 0) and (percent <= 100) for percent in self.wb_fuzzing]))
       return
 
@@ -327,7 +324,8 @@ def GenerateFrames(task:TaskT, enumRotations:list[tuple[str,str]]) -> tuple[list
             continue
         
         # webp output is ImageMagick-only; no animation in GraphicsMagick
-        (magick_convert, opts) = (("convert-im6.q16", webp_options) if (isWEBP := (outfmt == "WEBP")) else ("convert", ""))
+        (magick_convert, opts) = (("convert-im6.q16", webp_options) if (isWEBP := (outfmt == "WEBP")) else 
+                                  ("convert", (RGB.argstr_GIF(len(enumRotations)) if(outfmt == "GIF") else "")))
         cmd = f"{magick_convert} '{srcfmt}:{framedir}/frame*.{srcfmt.lower()}' {opts} -adjoin '{outfmt}:{work_file}'"
         if isWEBP: webp_rendercmds.append(cmd);
         else: render_commands.append(cmd);

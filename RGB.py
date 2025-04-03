@@ -188,7 +188,6 @@ def GenerateCommands(stepsize:float, writeMPC:bool=True, writePNG:bool=False, wr
 
 # TODO: generate colormap without 'remap'
 # TODO: handle GIF/video inputs (divide into frames and interpolate between them)
-# TODO: gif needs options for default-delay and ignore-loop
 # TODO: hwaccel with ffmpeg
 
 
@@ -205,9 +204,25 @@ def RecolorStr(old:str, new:int|str):
     new = (HexString(new) if isinstance(new, int) else HexString(int(new,16)) if new.startswith('0x') else new.title())
     return f"-fill {new} -opaque {old.title()}"
 
-def EdgeHighlight(srcimg:pathlib.Path, edge_color:int|str, edge_radius=2) -> tuple[str, pathlib.Path]:
+def EdgeHighlight(srcimg:pathlib.Path, edge_color:int|str, edge_radius) -> tuple[str, pathlib.Path]:
     """returns recolor-command and output path"""
     recolor_str = f"{RecolorStr('Black', 'Transparent')} {RecolorStr('White', edge_color)}"
-    # saturation 0% and fuzz 100% to isolate all the non-white pixels
-    recolor_mid = f"-modulate 100,0 -edge {edge_radius} -fuzz 100% {recolor_str}"
+    if (Globals.MAGICKLIBRARY == "IM"): # for some reason IM needs rgba specified, and fuzz cannot be 100%
+        recolor_mid = f"-threshold 25% -channel rgba -modulate 100,0 -edge {edge_radius} -fuzz 99% {recolor_str}"
+        # also, '-threshold' is required, otherwise the edge-detection goes insane and traces just about every pixel. Order matters; the outcome is slightly different if you move 'threshold' later.
+    else: # saturation 0% and fuzz 100% to isolate all the non-white pixels
+        recolor_mid = f"-modulate 100,0 -edge {edge_radius} -fuzz 100% {recolor_str}"
     return convertCMD(srcimg, recolor_mid, "srcimg_edge")
+
+
+def argstr_GIF(numRotations:int):
+    # frames generated for GIF output need preprocessing to reduced (255) color-palette
+    # 'fuzz' and 'treedepth' options have no effect (IM and GM), regardless of value and remap/morph options. (output has identical checksum)
+    remap_arg = ("+remap" if (Globals.MAGICKLIBRARY == "IM") else "") # IM-only; GM does not recognize 'remap'
+    use_morph = False; morph_arg = ("-morph 10" if use_morph else "")
+    def_delay = (Globals.MAGICKLIBRARY == "IM") # TODO: for some reason, specifying '-delay' with GraphicsMagick INCREASES speed??!
+    delay_arg = (f"-delay {max(int(4*(200/numRotations)), 1)}" if def_delay else "")
+    disposing = "-dispose None" # "Undefined | Background | Previous"
+    GIFargstr = f"+dither {morph_arg} {delay_arg} {disposing} {remap_arg}".strip() # '+dither' disables dithering
+    # dithering prevents color-banding but causes visual static, increases filesize by 50%, and cripples '+remap' operation
+    return GIFargstr
