@@ -221,11 +221,13 @@ def CreateTempdir(checksum:str, autodelete=True, use_tmpfs=False) -> tuple[pathl
 # If the path contains a directory, that directory must already exist, otherwise the logfile will simply not be written (silent failure; no warnings, of course)
 # also, the mechanisms for writing numbered logfiles are only triggered by the event-limit (see log.mgk);
 # otherwise, GraphicsMagick just overwrites the same logfile on every single run.
-def RotateMagickLogs(toplevel:pathlib.Path) -> pathlib.Path:
+def RotateMagickLogs(toplevel:pathlib.Path, keep_limit:int, verbose=False) -> pathlib.Path:
     """ Create logging directory and rename existing logs.\n
     Logs prefixed with 'magickrgb' will be rotated. \n Logs' filenames should end with digits. \n
     Assumes that GraphicsMagick's logging-config (log.mgk) has 'filename' is set to: \n "/tmp/RGB_TOPLEVEL/magicklogs/magickrgb_%d.log" \n
     :param toplevel: see 'Globals.TOPLEVEL_NAME'
+    :param keep_limit: rotations until deletion
+    :param verbose: prints detailed information
     :return: path to log-directory """
     assert(toplevel.name == Globals.TOPLEVEL_NAME), "expected log-directory to be under toplevel"
     #assert(toplevel.is_relative_to("/tmp/")), "reminder to change paths in 'log.mgk' and 'log.xml'";
@@ -236,8 +238,10 @@ def RotateMagickLogs(toplevel:pathlib.Path) -> pathlib.Path:
     if new_logdir.exists(): assert(new_logdir.is_dir()), "existing log-directory was not actually a directory!?"
     else: new_logdir.mkdir(); print(f"created log-directory: '{new_logdir}'");
     
-    stale_logs:list[pathlib.Path] = [F for F in new_logdir.glob("magickrgb_*.log.old") if (not F.is_dir())]
-    fresh_logs:list[pathlib.Path] = [F for F in new_logdir.glob("magickrgb_*.log") if ((F not in stale_logs) and (not F.is_dir()))]
+    stale_logs:list[pathlib.Path] = [F for F in new_logdir.glob("magickrgb_*.old.log") if (F.is_file())]
+    fresh_logs:list[pathlib.Path] = [F for F in new_logdir.glob("magickrgb_*.log") if (F.is_file() and (F not in stale_logs))]
+    moved_logs:list[pathlib.Path] = []
+    logDeleted:list[pathlib.Path] = []
     
     def PrintLognames(name, loglist:list[pathlib.Path]):
         if((length := len(loglist)) > 0): print(f"{name} ({str(length).zfill(2)}): [" + ", ".join([L.name for L in loglist]) + "]");
@@ -247,21 +251,25 @@ def RotateMagickLogs(toplevel:pathlib.Path) -> pathlib.Path:
     PrintLognames("fresh", fresh_logs)
     PrintLognames("stale", stale_logs)
     
-    # TODO: implement a limit for how many logs are kept, delete stale logs?
-    for log in fresh_logs:
-        current_name = log.name; log_num = log.stem.removeprefix("magickrgb_")
-        middle_name = "".join(C for C in log_num if C.isalpha())
-        if (len(middle_name) != 0): middle_name = f"_{middle_name}";
-        if not (log_num.isdigit()):
-            log_num = "".join(reversed([C for C in reversed(log_num) if C.isdigit()])) # this takes all digits in remaining text, not just trailing
-            if (len(log_num) == 0): log_num = '0';
-        if not (log_num.isdigit()): print(f"error parsing filename of log: ({log_num}); '{log}'"); continue;
-        while((new_path := new_logdir / f"magickrgb{middle_name}_{str(log_num).zfill(3)}.log.old").exists()): log_num = int(log_num)+1;
-        print(f"  rotating:  {current_name} -> {new_path.name}")
-        log.rename(new_path.absolute())
+    for log in [*stale_logs, *fresh_logs]:
+        if (keep_limit <= 0): logDeleted.append(log); log.unlink(); continue;
+        if (not (hitlimit := False) and (is_old := ('.old' in log.suffixes)) and (log in logDeleted)): continue;
+        middle_name = (current_name := log.name).removesuffix(''.join(log.suffixes)).removeprefix("magickrgb_");
+        if ((n_len := len(log_num := ''.join(C for C in middle_name[-3:] if C.isdigit()))) == 0): log_num = '1';
+        middle_name = f"_{(middle_name[:-n_len] if (n_len > 0) else middle_name.strip('_'))}".removesuffix('_');
+        if not log_num.isdigit(): print(f"[ERROR] failed parsing log-number! ({log_num}): '{log}'"); continue;
+        while ((new_path := new_logdir / f"magickrgb{middle_name}_{str(log_num).zfill(3)}.old.log").exists()):
+            if (hitlimit := ((log_num := int(log_num) + 1) > keep_limit)): logDeleted.append(new_path); break;
+        if (hitlimit and is_old): log.unlink(); continue;
+        print(f" rotating:  {current_name} -> {new_path.name}")
+        moved_logs.append(log); log.rename(new_path.absolute())
     
-    PrintLognames("moved", [F for F in new_logdir.glob("magickrgb_*.log.old") if ((not (F in stale_logs)) and (not F.is_dir()))])
-    print(f"{len(fresh_logs)} logs rotated [{len(stale_logs)+len(fresh_logs)} total]\n")
+    logCreated = [F for F in new_logdir.glob("magickrgb_*.old.log") if (F.is_file() and (F not in stale_logs))]
+    if verbose:
+        PrintLognames("created", logCreated)
+        PrintLognames("deleted", logDeleted)
+        PrintLognames("renamed", moved_logs)
+    print(f"{len(stale_logs)+len(fresh_logs)} logs rotated [{len(logCreated)} created][{len(logDeleted)} deleted][{len(moved_logs)} renamed]\n")
     return new_logdir
 
 
@@ -352,7 +360,7 @@ def SubCommand(cmdline:list[str]|str, logname:str|None = "main", isCmdSequence:b
 
 
 def Main(identify_srcimg=False):
-    (conf_cmdline_args, conf_env_defaults) = Config.Init()
+    (conf_env_defaults, conf_cmdline_args, main_config) = Config.Init()
     args = ParseCmdline(conf_cmdline_args); Globals.Break("PARSE_ONLY")
     
     image_md5sum = subprocess.check_output(["md5sum", str(args.image_path)])
@@ -367,8 +375,9 @@ def Main(identify_srcimg=False):
     print(f"output_directory resolved to: {output_directory}")
     Globals.Break("PARSE_ONLY") # select with '--parse-only 2'
     
-    log_directory = RotateMagickLogs(workdir.parent)
-    (baseimg,srcimg) = MakeImageSources(workdir, args.image_path)
+    lognum_limit = main_config["log_limit"]
+    (baseimg, srcimg) = MakeImageSources(workdir, args.image_path)
+    log_directory = RotateMagickLogs(workdir.parent, lognum_limit)
     Globals.UpdateGlobals(workdir, srcimg, log_directory) # dbgprint=True
     RGB.PrintGlobals() # no-op unless DEBUG_PRINT_GLOBALS / dbgprint
     

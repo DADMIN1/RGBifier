@@ -1,5 +1,8 @@
 {
   "NAME": "main_config.example",
+  "MAIN_OPTIONS": {
+    "log_limit": 2
+  },
   "ENV_DEFAULTS": {
     "MAGICK_DEBUG": "All",
     "MAGICK_ACCESS_MONITOR": true

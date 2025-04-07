@@ -8,12 +8,16 @@ CONFIG_DIRNAME = "configs_RGBifier"
 CONFIG_DIR:pathlib.Path|None = None
 
 
-config_entries = { "NAME": str, "ENV_DEFAULTS": dict, "CMDLINE_ARGS": list, "DEBUG_FLAGS": list, }
+config_entries = { "NAME":str, "MAIN_OPTIONS":dict, "ENV_DEFAULTS":dict, "CMDLINE_ARGS":list, "DEBUG_FLAGS":list, }
 default_config = { K:T() for (K,T) in config_entries.items() }
 example_config = {
     # name of config file.
     "NAME": "main_config.example",
     # note: avoid calling (pathlib) '_.with_suffix(".json")'; it deletes '.backup' and '.example' from filenames
+    
+    "MAIN_OPTIONS": {
+        "log_limit": 2, # rotations until deletion
+    },
     
     # these values are set if var is not already defined in env
     "ENV_DEFAULTS": {
@@ -107,13 +111,17 @@ def ApplyConfig(config:dict) -> (bool, tuple):
             print(f"  unrecognized entry: '{entry}'")
         print(f"error applying config: '{config_name}'")
     
-    cmdline_args = config.get("CMDLINE_ARGS", [])
+    main_options = config.get("MAIN_OPTIONS", {})
     env_defaults = config.get("ENV_DEFAULTS", {})
+    cmdline_args = config.get("CMDLINE_ARGS", [])
     debug_flags  = config.get("DEBUG_FLAGS",  [])
     
+    if ("log_limit" not in main_options.keys()):
+        main_options["log_limit"] = example_config["MAIN_OPTIONS"]["log_limit"]
+    
     try: Globals.ApplyDebugFlags(debug_flags);
-    except NameError as FAIL: success = False; print(FAIL);
-    return (success, (cmdline_args, env_defaults))
+    except NameError as FAILURE: success = False; print(FAILURE);
+    return (success, (env_defaults, cmdline_args, main_options));
 
 
 def WriteDefaultConfigs(overwrite_existing = False, do_backup:bool=True):
@@ -150,10 +158,10 @@ def Init(write_default_configs = False, overwrite_existing = False):
     (conf_load_success, config) = LoadConfig()
     if not conf_load_success: print(f"[ERROR] config_dir does not exist"); exit(6);
     
-    (conf_apply_success, (conf_cmdline_args, conf_env_defaults)) = ApplyConfig(config)
+    (conf_apply_success, (env_defaults, cmdline_args, main_options)) = ApplyConfig(config)
     if not conf_apply_success: print(f"[ERROR] failed to apply config"); exit(7);
     
-    return (conf_cmdline_args, conf_env_defaults)
+    return (env_defaults, cmdline_args, main_options)
 
 
 if __name__ == "__main__":
