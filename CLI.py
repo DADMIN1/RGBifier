@@ -16,7 +16,7 @@ def FilterText(text:str) -> str:
 
 def PrintDict(D:dict, name=None):
     if name is not None: print(f"{name} = "+"{ ");
-    for (k,v) in D.items(): print(f"  {k}: {v},");
+    for (k,v) in D.items(): print(f"  {k}: {repr(v)},");
     if name is not None: print("}\n");
 
 
@@ -79,12 +79,30 @@ class CustomFormatter(argparse.RawTextHelpFormatter, argparse.ArgumentDefaultsHe
 # seemingly triggered by any option without a 'type' specified (like any transform option)
 
 
-def ParseCmdline(arglist:list[str]|None = None) -> argparse.Namespace:
+def ParseCmdline(arglist:list[str]|None = None, *, debug_mode=False, ignore_input_path=None) -> argparse.Namespace|None:
+    """ 
+    :param arglist: additional args parsed before commandline
+    :param debug_mode: disable exit_on_error and most asserts
+    :param ignore_input_path: try to ignore argparse bullshit
+    :return: parsed-args, unless '--help' or debug_mode
+    ignore_input_path will match debug_mode unless specified
+    """
     parser = argparse.ArgumentParser(
         prog="RGBifier", allow_abbrev=False,
         formatter_class=CustomFormatter
     )
     #TODO: description and epilog
+    
+    parser.exit_on_error = (not debug_mode)
+    if (ignore_input_path is None): ignore_input_path = debug_mode;
+    
+    # TODO: print condition's source-code in debug_mode (especially on failure)
+    def _ASSERT(condition:bool, errmsg:str, *, print_status=debug_mode):
+        _print = ((lambda S: print(S)) if print_status else (lambda _: None))
+        if condition: return lambda: _print("[ASSERTION PASSED]");
+        if (not condition) and debug_mode: return lambda: _print(f"[ASSERTION FAILED] {errmsg}");
+        raise AssertionError(errmsg)
+    ASSERT = lambda condition, errmsg: _ASSERT(condition, errmsg)()
     
     group_system = parser.add_argument_group("system-options")
     primary_args = parser.add_argument_group("main arguments")
@@ -138,36 +156,60 @@ def ParseCmdline(arglist:list[str]|None = None) -> argparse.Namespace:
     def StrHex(num:str): return (StrHexIM(num), StrHexGM(num)); # need both until we know which library
     
     def MaybePercent(num:str):
-        num = int(float(num)*100) if ('.' in num) else int(num.removesuffix('%'))
-        if ((num < 0) or (num > 100)): raise Exception(f"invalid percent: {num}");
+        num = int(float(num) * 100) if ('.' in num) else int(num.removesuffix('%'))
+        if ((num < 0) or (num > 100)): raise ValueError(f"invalid percent: {num}%");
         return num
     
     group_recolor.description = textwrap.dedent("""\
-        keep in mind that Alpha-channel value is interpreted differently by each library
+        keep in mind that each library interprets Alpha-channel values differently.
         colors passed on the command-line (without alpha specified) will be opaque,
         but no conversion will be performed when the color has a specified alpha.
-        
-        Alpha: [opaque -> transparent] || ImageMagick: [FF -> 00] || GraphicsMagick: [00 -> FF]"""
+          Alpha: [opaque -> transparent]
+          ImageMagick:    [0xFF -> 0x00]
+          GraphicsMagick: [0x00 -> 0xFF]"""
     )
+    # Alpha: [opaque -> transparent] || ImageMagick: [FF -> 00] || GraphicsMagick: [00 -> FF]
+    # IM: [(opaque) 0xFF -> 0x00 (transparent)]
+    # GM: [(opaque) 0x00 -> 0xFF (transparent)]
+    # IM: [0xFF -> 0x00] | GM: [0x00 -> 0xFF]
     
-    group_recolor.add_argument("--edge", metavar="RRGGBB[AA]", type=StrHex, nargs='?', const="0x00FF00", help="edge-detection (default color: 0x00FF00)")
-    group_recolor.add_argument("--edge-radius", metavar="int", type=int, default=2, help="edge-detection radius")
+    edgecolor_default = "0x00FF00"
+    edge_radius_given = False
+    def EdgeRadius(R) -> int:
+        nonlocal edge_radius_given; edge_radius_given = True
+        if ((radius := int(R)) <= 0): raise ValueError(f"invalid edge-radius: {R}");
+        return radius
+    
+    group_recolor.add_argument("--edge", metavar="RRGGBB[AA]", type=StrHex, nargs='?', const=edgecolor_default, help=f"edge-detection (default color: {edgecolor_default})")
+    group_recolor.add_argument("--edge-radius", metavar="int", type=EdgeRadius, default=2, help="edge-detection radius")
+    
     # the lambda given for 'type' allows lowercase letters to be passed
     group_recolor.add_argument("--remap", choices=['W','B','WB','BW'], type=lambda S:S.upper(), help="recolor white and/or black areas")
     group_recolor.add_argument("--fuzz", metavar="int[%]", type=MaybePercent, nargs=2, default=(10, 50), help="fuzz-percent for white and black")
     group_recolor.add_argument("--white", metavar="RRGGBB[AA]", type=StrHex, default="0xFF0000", help="remapped white")
     group_recolor.add_argument("--black", metavar="RRGGBB[AA]", type=StrHex, default="0x0000FF", help="remapped black")
     
-    if ('--help' in arglist): parser.print_help(); print('\n'); exit(0);
-    parsed_args = None; print("\nparsing args...")
+    # printing usage would not display these because they haven't been added yet
+    missing_usage = "\t\tIMAGE [DIRECTORY] [--stepsize (float)] [--format fmt [fmt ...]]\n"
+    patched_usage = f"{parser.format_usage()}{missing_usage}"
+    helpmsg = parser.format_help().removeprefix(parser.format_usage()) # removing incomplete usage from help
+    if ((arglist is not None) and ('--help' in arglist)): print(f"{patched_usage}{helpmsg}\n"); return None;
+    # TODO: unfortunately, the help section still won't contain entries for these options
+    # also, 'ignore_input_path' causes 'IMAGE' to disappear from usage (when using '--help')
+    
+    parsed_args = None; print("parsing args...")
     if ((arglist is not None) and (len(arglist) > 0)):
         print(f"additional args given: {arglist}")
         parsed_args = parser.parse_args(arglist)
         print(f"[parsed arglist]: {parsed_args}")
     
-    # TODO: use 'parse_known_args' and 'parse_intermixed_args' for this behavior
-    # positional arguments must be added after initial arglist parse, otherwise it errors because they're required 
-    primary_args.add_argument("image_path", type=pathlib.Path, metavar="IMAGE", help="path of image being RGBified (this argument is mandatory)")
+    # defining this first to provide a default value; defining after doesn't work. BOTH arguments need 'nargs=argparse.SUPPRESS'
+    if ignore_input_path: primary_args.add_argument("image_path", help=argparse.SUPPRESS, nargs=argparse.SUPPRESS, type=pathlib.Path, default=pathlib.Path('default_image_path.png'));
+    
+    # positional arguments must be added after initial arglist parse, otherwise providing an image-path is absolutely mandatory.
+    # argparse forcibly terminates when image-path isn't provided, even if an image-path has already been set in the Namespace.
+    # this behavior cannot be avoided by disabling 'exit_on_error', and even when using 'parse_known_args' and 'parse_intermixed_args'.
+    primary_args.add_argument("image_path", type=pathlib.Path, metavar="IMAGE", help="path of image being RGBified (this argument is mandatory)", nargs=(argparse.SUPPRESS if ignore_input_path else None))
     primary_args.add_argument("output_dir", type=ExplicitPath, metavar="DIRECTORY", nargs='?', help="output location - same as input by default")
     primary_args.add_argument("--stepsize", type=float, default=1.00, metavar='(float)', help="modulation per frame - 1/200th of full cycle")
     
@@ -200,11 +242,10 @@ def ParseCmdline(arglist:list[str]|None = None) -> argparse.Namespace:
         else: print("automatically switching to ImageMagick backend"); parsed_args.magick="IM"; # when no other format was selected
     print("")
     
-    # assert(isinstance(parsed_args.fps, int))
-    assert(parsed_args.stepsize != 0), "stepsize must not be zero"
-    assert(len(parsed_args.output_formats) > 0), "missing output format"
-    assert(all([(fmt in valid_fileformats) for fmt in parsed_args.output_formats])), "invalid format after processing cmdline"
-    if not parsed_args.image_path.exists(): print(f"[ERROR] non-existent input_path: [{parsed_args.image_path}]"); exit(1);
+    ASSERT((parsed_args.stepsize != 0), "stepsize must not be zero")
+    ASSERT((len(parsed_args.output_formats) > 0), "missing output format")
+    ASSERT((all([(fmt in valid_fileformats) for fmt in parsed_args.output_formats])), "invalid format after processing cmdline")
+    if not ignore_input_path: ASSERT((parsed_args.image_path.exists()), f"[ERROR] non-existent input_path: [{parsed_args.image_path}]");
     
     Globals.MAGICKLIBRARY = parsed_args.magick; debug_flags = []
     def Extend(S, C): debug_flags.extend([S for _ in range(C)]);
@@ -212,22 +253,27 @@ def ParseCmdline(arglist:list[str]|None = None) -> argparse.Namespace:
     if (FC := parsed_args.parse_only): Extend("PARSE_ONLY", FC);
     if (len(debug_flags)): Globals.ApplyDebugFlags(debug_flags);
     
+    if (edge_radius_given and (parsed_args.edge is None)):
+        print(f"edge-radius given with edge-color unspecified - using default value ({edgecolor_default})")
+        parsed_args.edge = StrHex(edgecolor_default)
+    
     if (parsed_args.edge):
-        parsed_args.edge = parsed_args.edge[0 if (parsed_args.magick=='IM') else 1]
-        assert(L:=len(H:=(parsed_args.edge.removeprefix('0x')))==8), f"edgecolor hex '{H}' has invalid length: {L}";
+        parsed_args.edge = parsed_args.edge[0 if (parsed_args.magick == 'IM') else 1]
+        ASSERT(((L:=len(H:=(parsed_args.edge.removeprefix('0x')))) == 8), f"edgecolor hex '{H}' has invalid length: {L}")
     
     if (parsed_args.remap):
         parsed_args.white = parsed_args.white[0 if (parsed_args.magick=='IM') else 1]
         parsed_args.black = parsed_args.black[0 if (parsed_args.magick=='IM') else 1]
         for S in (parsed_args.white, parsed_args.black):
-            assert(L:=len(S.removeprefix('0x')) == 8), f"color-hexcode '{S}' has invalid length: {L}";
-        assert(all([(percent >= 0) and (percent <= 100) for percent in parsed_args.fuzz])), "invalid fuzz percent!";
+            ASSERT((L:=len(S.removeprefix('0x')) == 8), f"color-hexcode '{S}' has invalid length: {L}")
+        ASSERT((all([(percent >= 0) and (percent <= 100) for percent in parsed_args.fuzz])), f"invalid fuzz percent! ({parsed_args.fuzz})")
         if ('W' not in parsed_args.remap): parsed_args.white = None;
         if ('B' not in parsed_args.remap): parsed_args.black = None;
-     
+    
+    if debug_mode: print(""); # spacing after ASSERT-messages 
     print(parsed_args) # Namespace(...)
     PrintDict(parsed_args.__dict__, "args")
-    return parsed_args
+    return (parsed_args if not (debug_mode or ignore_input_path) else None)
 
 
 # output-directory cannot be resolved during initial parsing because 'relative_tmp' requires knowledge of 'TEMPDIR'
@@ -301,4 +347,15 @@ def ResolveOutputPath(parsed_args:argparse.Namespace, toplevel:pathlib.Path):
 
 
 if __name__ == "__main__":
-    ParseCmdline(["--help"])
+    import sys
+    # note that default-args from user configs aren't loaded here
+    if (len(sys.argv) == 1): # if no args given: sys.argv == ['CLI.py']
+        # TODO: --help output changes when passed in arglist (both are slightly broken - see line #197)
+        assert(ParseCmdline(["--help"]) is None), "unexpected value returned by '--help' command";
+        exit(0)
+    
+    # ParseCmdline()
+    ParseCmdline(debug_mode=True)
+    # ParseCmdline(debug_mode=False, ignore_input_path=True)
+    # ParseCmdline(debug_mode=True, ignore_input_path=False)
+    
