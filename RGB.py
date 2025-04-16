@@ -18,9 +18,9 @@ def PrintGlobals(dbgprint:bool = False):
     return
 
 
-# same as normal range, except with floats. Includes both 'start' and 'end' values
+# same as normal range, except with floats. does not include 'end' value
 def FloatRange(start:float, end:float, interval:float, precision:int=6) -> list[float]:
-    return [*((I/(10**precision)) for I in range(*[int(F*(10**precision)) for F in (start, end, interval)])), float(end)]
+    return [(I/(10**precision)) for I in range(*[int(F*(10**precision)) for F in (start, end, interval)])]
 
 # the interval between the penultimate number and the end can be awkward if it's not a clean divisor
 # should it overshoot the end instead? can the start/end be adjusted to compensate?
@@ -63,8 +63,12 @@ def HueRotations(stepsize:float) -> list[str]:
     return rotation_strs
 
 
-def EnumRotations(stepsize:float) -> list[tuple[str,str]]:
+def EnumRotations(stepsize:float, length:int=200) -> list[tuple[str,str]]:
+    assert(length > 0), "rotation length must be positive";
     rotation_strs = HueRotations(stepsize)
+    extended_rotations = rotation_strs
+    for _ in range(length//200): extended_rotations.extend(rotation_strs);
+    rotation_strs = extended_rotations[:length]; assert(len(rotation_strs) == length);
     padding = 1 + int(log10(len(rotation_strs)))
     enumRotations = [
         (str(index).zfill(padding), rotation)
@@ -215,14 +219,28 @@ def EdgeHighlight(srcimg:pathlib.Path, edge_color:int|str, edge_radius) -> tuple
     return convertCMD(srcimg, recolor_mid, "srcimg_edge")
 
 
-def argstr_GIF(numRotations:int):
+def EdgeHighlightCMD(edge_color:int|str, edge_radius) -> str:
+    """returns partially-constructed command - format-string with an unfilled input-path and no output"""
+    recolor_str = f"{RecolorStr('Black', 'Transparent')} {RecolorStr('White', edge_color)}"
+    if (Globals.MAGICKLIBRARY == "IM"): # for some reason IM needs rgba specified, and fuzz cannot be 100%
+        recolor_mid = f"-threshold 25% -channel rgba -modulate 100,0 -edge {edge_radius} -fuzz 99% {recolor_str}"
+        # also, '-threshold' is required, otherwise the edge-detection goes insane and traces just about every pixel. Order matters; the outcome is slightly different if you move 'threshold' later.
+    else: # saturation 0% and fuzz 100% to isolate all the non-white pixels
+        recolor_mid = f"-matte -modulate 100,0 -edge {edge_radius} -fuzz 100% {recolor_str}"
+        # '-matte' is required when source has no transparency? otherwise background stays black instead of transparent 
+    return "convert {0} " + recolor_mid  # doesn't contain output; needs to be appended manually
+
+
+def argstr_GIF(numRotations:int|None = None):
     # frames generated for GIF output need preprocessing to reduced (255) color-palette
     # 'fuzz' and 'treedepth' options have no effect (IM and GM), regardless of value and remap/morph options. (output has identical checksum)
-    remap_arg = ("+remap" if (Globals.MAGICKLIBRARY == "IM") else "") # IM-only; GM does not recognize 'remap'
-    use_morph = False; morph_arg = ("-morph 10" if use_morph else "")
-    def_delay = (Globals.MAGICKLIBRARY == "IM") # TODO: for some reason, specifying '-delay' with GraphicsMagick INCREASES speed??!
-    delay_arg = (f"-delay {max(int(4*(200/numRotations)), 1)}" if def_delay else "")
-    disposing = "-dispose None" # "Undefined | Background | Previous"
-    GIFargstr = f"+dither {morph_arg} {delay_arg} {disposing} {remap_arg}".strip() # '+dither' disables dithering
+    remap_arg = ("+remap" if (Globals.MAGICKLIBRARY == "IM") else ' ') # IM-only; GM does not recognize 'remap'
+    use_morph = False; morph_arg = ("-morph 10" if use_morph else ' ')
+    #use_delay = (Globals.MAGICKLIBRARY == "IM") and (numRotations is not None) and (numRotations > 0) # TODO: for some reason, specifying '-delay' with GraphicsMagick INCREASES speed??!
+    use_delay = False
+    delay_arg = (f"-delay {max(int(4*(200/numRotations)), 1)}" if use_delay else ' ')
+    disposing = "-dispose None" # {None | Undefined | Background | Previous} (default: 'Undefined')
+    useDither = False; dithering = ' ' if useDither else "+dither" # '+dither' disables dithering
+    GIFargstr = f"{dithering} {morph_arg} {remap_arg} {disposing} {delay_arg}".replace('  ','').strip()
     # dithering prevents color-banding but causes visual static, increases filesize by 50%, and cripples '+remap' operation
     return GIFargstr

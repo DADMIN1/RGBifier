@@ -273,46 +273,79 @@ def RotateMagickLogs(toplevel:pathlib.Path, keep_limit:int, verbose=False) -> pa
     return new_logdir
 
 
-def MakeImageSources(workdir:pathlib.Path, input_file:pathlib.Path) -> tuple[pathlib.Path, pathlib.Path]:
+def MakeImageSources(workdir:pathlib.Path, input_file:pathlib.Path, max_frames:int|None=None) -> (Task.ImageSourceT, pathlib.Path):
     """
     :param workdir: temp subdirectory for image-processing
     :param input_file: image being RGBified; copied to workdir
-    :return: [baseimg (unmodified original), srcimg (preprocessed source)]
+    :param max_frames: limit number of frames extracted from video source
+    :return: ImageSource
     """
     assert(workdir.exists() and workdir.is_dir())
     assert(input_file.exists() and input_file.is_file() and (input_file.parent != workdir))
     
     # 'safe' filename makes it possible to parse output of 'identify'/'file' (otherwise splitting won't work if filename contained spaces)
-    safe_filename = FilterText(str(input_file.stem))
-    print(f"\nimage_path: '{input_file}'")
-    print(f"safe filename: '{safe_filename}'\n")
+    safe_filename = FilterText(input_file.name.removesuffix(''.join(input_file.suffixes)))
+    print(f"\ninput-path: '{input_file}'")
+    print(f"safe-filename: '{safe_filename}'\n")
+    
+    # TODO: actually verify the filetype/encoding of baseimg
+    if (len(input_file.suffixes) == 0): print("[WARNING] no suffix on input-file - assuming PNG");
+    og_suffix = (input_file.suffixes[-1].removeprefix('.') if (len(input_file.suffixes) > 0) else 'PNG').lower()
+    assert(og_suffix in ('png','mp4')), f"no implementation for input-format: {og_suffix}"
+    is_animated = (og_suffix == 'mp4') # TODO: figure out how to test gif/webp for animation
     
     # baseimg: copy of unmodified original
     # srcimg: transcoded / preprocessed image optimized for target pipelines
-    baseimg_path = pathlib.Path(workdir, f"baseimg_{safe_filename}").with_suffix(input_file.suffix)
-    srcimg_path = pathlib.Path(workdir, f"srcimg_{safe_filename}").with_suffix('.png')
+    baseimg_path = workdir / f"baseimg_{safe_filename}.{og_suffix}"
+    src_path = workdir / f"srcimg_{safe_filename}" # no suffix; could be subdirectory
+    source = Task.ImageSourceT(src_path, safe_filename)
     
     if baseimg_path.exists(): print(f"skipping baseimg copy (already exists)")
     else:
         print(f"copying baseimg: '{baseimg_path}'")
-        os.system(f"cp '{input_file}' '{baseimg_path}'")
-    
-    if srcimg_path.exists():
-        print(f"skipping srcimg creation (already exists)\n")
-        return (baseimg_path, srcimg_path)
+        os.system(f"cp --verbose '{input_file}' '{baseimg_path}'")
     
     print("preprocessing baseimg...")
-    # TODO: actually verify the filetype/encoding of baseimg
-    # TODO: actually preprocess the baseimg for gif/mp4
-    if not (baseimg_path.suffix == srcimg_path.suffix):
-        print("warning: conversion needed!")
-        #TODO: handle conversion
-    
-    os.system(f"cp '{baseimg_path}' '{srcimg_path}'")
-    print(f"preprocessed source created: '{srcimg_path}'")
+    # TODO: extract audio, if it exists
+    # TODO: get framerate (Task.py line 425)
+    if is_animated:
+        source.is_animated = True
+        prefix = 'frame'; suffix = '.png'
+        
+        if src_path.exists(): print(f"skipping srcimg creation (already exists)");
+        else:
+            print("extracting frames from baseimg...")
+            os.system(f"mkdir --verbose '{src_path}'")
+            
+            # ffmpeg numbers the extracted frames from index '1' by default, not '0'
+            status = os.system(f"ffmpeg -hide_banner -nostdin -n -i '{baseimg_path}' -f image2 -start_number 0 '{src_path}/{prefix}%d{suffix}'")
+            if (status != 0): print(f"ffmpeg frame-extraction exited with nonzero status: {status}; exiting..."); exit(4);
+        
+        # normalizing filename lengths with zero-padding
+        framelist = [*src_path.glob(f"{prefix}*{suffix}")]; assert(len(framelist) > 0), "must have frames!!";
+        index_len = 1 + int(RGB.log10(len(framelist) - 1)) # length of digit-strings in numbered filenames
+        # this calculation ^ assumes incremental numbering starting at ZERO! (indexing from 1 would use "len" instead of "len-1")
+        renameList = [
+            (frame, f'{prefix}{num.zfill(index_len)}{suffix}') for frame in framelist
+            if (index_len > len(num := frame.name.removeprefix(prefix).removesuffix(suffix)))
+        ] # when the file-number's length matches index_len, zero-padding would not change it
+        for (frame, newname) in renameList: frame.rename(frame.with_name(newname).absolute());
+        
+        source.source_frames = [*src_path.glob(f"{prefix}{'[0-9]'*index_len}{suffix}")] # 'frame[0-9][0-9][0-9].png'
+        #padfstr = f"%0{index_len}d"
+        
+        framecount = len(source.source_frames)
+        if ((max_frames is not None) and ((max_frames >= framecount) or (max_frames < 0))): max_frames = None;
+        source.source_frames = sorted(source.source_frames)[:max_frames]
+        print(f"source frames: {framecount} {f'(limited to {max_frames})' if max_frames is not None else ''}")
+        source.frame_count = (max_frames if (max_frames is not None) else framecount)
+        source.index_length = index_len
+    else:
+        os.system(f"cp --verbose '{baseimg_path}' '{src_path}'")
+        print(f"preprocessed source created: '{src_path}'")
     
     print("") # newline
-    return (baseimg_path, srcimg_path)
+    return source, baseimg_path
 
 
 def SubCommand(cmdline:list[str]|str, logname:str|None = "main", isCmdSequence:bool = False):
@@ -359,9 +392,42 @@ def SubCommand(cmdline:list[str]|str, logname:str|None = "main", isCmdSequence:b
     return
 
 
+def SavePreprocessingCommands(workdir:pathlib.Path, expanded_commands:dict):
+    better_names = {
+        "recolor_white": expanded_commands.get("$$srcimg_recolor_white$$", None),
+        "recolor_black": expanded_commands.get("$$srcimg_recolor_black$$", None),
+        "WB_recolor": expanded_commands.get("$$srcimg_WB_recolor$$", None),
+        "edge": expanded_commands.get("$$srcimg_edge$$", None),
+        "preprocessed": expanded_commands.get("$$srcimg_preprocessed$$", None),
+        "final": expanded_commands.get("$$srcimg$$", None),
+    }
+    
+    # searching for scaled entries
+    for magic in expanded_commands.keys():
+        if 'srcimg_scale' not in magic: continue;
+        scaletxt = magic.strip('$').removeprefix('srcimg_')
+        better_names[scaletxt] = expanded_commands[magic]
+    
+    batchdir = workdir/"batchfile"
+    batchdir.mkdir(exist_ok=True)
+    batch_files = []
+    for (title, commandlist) in better_names.items():
+        if commandlist is None: continue;
+        filepath = batchdir/title
+        print(f"writing commands to: batchfile/{filepath.name}")
+        with filepath.open(mode='w', encoding='utf-8') as newfile:
+            newfile.write('\n'.join(commandlist)); newfile.write('\n\n')
+        batch_files.append(filepath)
+    print(f"finished writing all batchfiles!\n")
+    batch_commands = [f"gm batch -echo on -stop-on-error on '{batchfile}'" for batchfile in batch_files]
+    print('\n'.join(batch_commands)); print('\n')
+    return batch_commands
+
+
 def Main(identify_srcimg=False):
     (conf_env_defaults, conf_cmdline_args, main_config) = Config.Init()
     args = ParseCmdline(conf_cmdline_args); Globals.Break("PARSE_ONLY")
+    if args is None: exit(0); # debug mode or arglist contained '--help'
     
     image_md5sum = subprocess.check_output(["md5sum", str(args.image_path)])
     checksum = str(image_md5sum, encoding="utf-8").split()[0]
@@ -375,9 +441,10 @@ def Main(identify_srcimg=False):
     print(f"output_directory resolved to: {output_directory}")
     Globals.Break("PARSE_ONLY") # select with '--parse-only 2'
     
-    lognum_limit = main_config["log_limit"]
-    (baseimg, srcimg) = MakeImageSources(workdir, args.image_path)
-    log_directory = RotateMagickLogs(workdir.parent, lognum_limit)
+    (source, baseimg) = MakeImageSources(workdir, args.image_path)
+    srcimg = source.srcpath
+    
+    log_directory = RotateMagickLogs(workdir.parent, main_config["log_limit"])
     Globals.UpdateGlobals(workdir, srcimg, log_directory) # dbgprint=True
     RGB.PrintGlobals() # no-op unless DEBUG_PRINT_GLOBALS / dbgprint
     
@@ -389,8 +456,7 @@ def Main(identify_srcimg=False):
         SubCommand(f"{('gm convert -list resources' if (Globals.MAGICKLIBRARY=="GM") else 'identify -list resource')}", logname=None)
         SubCommand(f"{('gm ' if (Globals.MAGICKLIBRARY=="GM") else '')}identify -verbose {str(srcimg)}", logname=None)
     
-    output_filename = f"{Globals.SRCIMG_PATH.with_suffix('').name}_RGB".removeprefix('srcimg_')
-    # not using 'args.image_path' because that filename might be unsafe.
+    output_filename = f"{source.safe_filename}_RGB"
     print(f"output_filename: {output_filename}")
     print(f"original location: {args.image_path.parent.absolute()}")
     print(f"final: {(output_directory/output_filename).absolute()}")
@@ -402,9 +468,8 @@ def Main(identify_srcimg=False):
     )
     
     task = Task.TaskT(
-        srcimg,
         workdir,
-        checksum,
+        source,
         args.crop,
         args.gravity,
         args.scales,
@@ -415,18 +480,22 @@ def Main(identify_srcimg=False):
         args.output_formats,
     )
     
-    new_srcimg = Task.ImagePreprocess(task)
-    if (new_srcimg is not None):
-        print(f"[ImagePreprocess] new srcimg path: {new_srcimg}")
-        Globals.UpdateGlobals(workdir, new_srcimg, log_directory)
-        print(f"updated srcimg path: {srcimg} -> {new_srcimg}\n")
+    expanded_commands = Task.ImagePreprocess(task)
+    # if (new_srcimg is not None):
+    #     new_srcimg = new_srcimg.srcpath
+    #     print(f"[ImagePreprocess] new srcimg path: {new_srcimg}")
+    #     Globals.UpdateGlobals(workdir, new_srcimg, log_directory)
+    #     print(f"updated srcimg path: {srcimg} -> {new_srcimg}\n")
         # srcimg = new_srcimg
+    
+    preprocess_batch_commands = SavePreprocessingCommands(workdir, expanded_commands)
+    SubCommand(preprocess_batch_commands, "manual_preprocessing", isCmdSequence=True)
     
     expected_outputs = Task.FillExpectedOutputs(task)
     print('\n'); assert(len(expected_outputs) > 0), "no expected outputs"
     
     # command_names = ("preprocessing", "frame_generation", "rendering")
-    commands = Task.GenerateFrames(task, RGB.EnumRotations(args.stepsize))
+    commands = Task.GenerateFrames(task, RGB.EnumRotations(args.stepsize, source.frame_count))
     (webp_rendercmds, ffmpeg_commands) = commands[-2:]; commands = commands[:3]
     
     cmd_names = ("preprocessing", "frame_generation", "rendering", "rendering_webp", "rendering_ffmpeg")
@@ -444,7 +513,10 @@ def Main(identify_srcimg=False):
     
     if (use_IM := (Globals.MAGICKLIBRARY == "IM")): batch_commands = []; # prevents GM-only cmds
     batch_zip = zip(cmd_names, (batch_commands if (Globals.MAGICKLIBRARY == "GM") else commands))
-    for (cmds_name, commands) in batch_zip: SubCommand(commands, cmds_name, isCmdSequence=use_IM)
+    # for (cmds_name, commands) in batch_zip: SubCommand(commands, cmds_name, isCmdSequence=use_IM)
+    for (cmds_name, commands) in batch_zip:
+        if cmds_name == "preprocessing": continue;
+        SubCommand(commands, cmds_name, isCmdSequence=use_IM)
     if  (len(webp_rendercmds) > 0): SubCommand(webp_rendercmds, cmd_names[3], isCmdSequence=True)
     if  (len(ffmpeg_commands) > 0): SubCommand(ffmpeg_commands, cmd_names[4], isCmdSequence=True)
     

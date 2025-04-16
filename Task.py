@@ -17,23 +17,42 @@ class ColorRemapT():
       return
 
 
+class ImageSourceT():
+    def __init__(self, srcpath:pathlib.Path, safe_filename:str):
+        self.srcpath = srcpath # no extension, could be subdirectory
+        self.safe_filename = safe_filename
+        self.source_frames:list[pathlib.Path] = []
+        self.magic = f"$${safe_filename}$$"
+        self.image_format = "PNG"
+        self.is_animated = False
+        self.frame_count = 200 # full RGB cycle
+        self.digit_count = 3 # digits in frame_count
+        return
+    
+    def GetNames(self):
+        contents = (self.source_frames if self.is_animated else [self.srcpath])
+        return [F.name.removesuffix(''.join(F.suffixes)) for F in contents]
+    
+    def QuoteSource(self):
+        contents = (self.source_frames if self.is_animated else [self.srcpath])
+        return [f"'{self.image_format}:{F}'" for F in contents]
+
+
 class TaskT():
   def __init__(self,
-        baseimg:pathlib.Path,
         workdir:pathlib.Path,
-        checksum:str,
+        img_src:ImageSourceT,
         crop:str|None, grav:str,
         rescales:list[str]|None,
         color_options:ColorRemapT,
-        frame_format:str,
+        primary_format:str,
         output_filename:str,
         output_directory:pathlib.Path,
         output_fileformats:list[str],
     ):
-    self.image_source = baseimg
-    self.image_md5sum = checksum
     self.working_path = workdir
-    self.primary_format = frame_format
+    self.image_source = img_src
+    self.primary_format = primary_format
     self.output_filename = output_filename
     self.output_directory = output_directory
     self.output_fileformats = output_fileformats
@@ -48,15 +67,19 @@ class TaskT():
       self.edgeRadius,
     ) = color_options.__dict__.values()
     
-    self.frame_formats = [ frame_format, ]
+    self.frame_formats = [ primary_format, ]
     if (('APNG' in output_fileformats) or ('MP4' in output_fileformats)): self.frame_formats.append('PNG');
     
     self.did_preprocess_img = False
-    self.image_preprocessed = None # output-path of ImagePreprocess; if edge-color or whiteBlack-remapping are enabled
-    self.preprocessing_list = [] # tuple of (commands, output_path) - outputs are color-swapped, scaled and/or cropped
+    self.image_preprocessed = None # list of ImageSourceT converted to .miff - color-swapped, scaled and/or cropped
+    self.preprocessing_cmds = []
     self.expected_outputs = []
     
-    assert(frame_format in ('MPC', 'MIFF'))
+    self.frame_directories = {
+        # miff_frames_scale50: (ImageSourceT, ImageSourceT) (source, dest)
+    }
+    
+    assert(primary_format in ('MPC', 'MIFF'))
     assert(output_filename.endswith('_RGB'))
     assert(output_directory.exists() and output_directory.is_dir())
     return
@@ -186,51 +209,117 @@ def CheckExpectedOutputs(task:TaskT) -> list[tuple[pathlib.Path,pathlib.Path]]:
     return results
 
 
-def ImagePreprocess(task:TaskT) -> pathlib.Path | None:
-    baseimg = task.image_source
-    workdir = task.working_path
-    task.image_preprocessed = None
-    task.preprocessing_list.clear()
+def ImagePreprocess(task:TaskT):
+    task.image_preprocessed = []
+    task.preprocessing_cmds.clear()
     scales = ParseScales(task.rescales)
     
-    current_img = baseimg
+    current_img = baseimg = task.image_source
+    frame_names = baseimg.GetNames()
+    newest_sink = baseimg
+    
+    magic_map = {
+        current_img.magic: current_img,
+    }
+    
+    # tuple contains: (sink, command, [sources]); where 'sink' and 'source' are magic-strings
+    transform_queue : list[tuple] = []
+    
+    # mapping sink-magic to command-list
+    expanded_commands = {}
+    
+    def CreateSink(new_name:str, new_fmt:str="PNG", source_img=None):
+        if source_img is None: source_img = current_img;
+        output_path = task.working_path / (new_name if source_img.is_animated else f"{new_name}.{new_fmt.lower()}")
+        sink = ImageSourceT(output_path, new_name)
+        sink.is_animated = source_img.is_animated
+        sink.frame_count = source_img.frame_count
+        sink.digit_count = source_img.digit_count
+        sink.image_format = new_fmt
+        
+        if sink.is_animated:
+            output_path.mkdir(exist_ok=True)
+            sink.source_frames = [output_path/f"{name}.{new_fmt.lower()}" for name in frame_names]
+        
+        nonlocal newest_sink; newest_sink = sink
+        magic_map[sink.magic] = sink
+        return sink
+    
+    def QueueTransform(command:str, sources:list[ImageSourceT]=None, sink:ImageSourceT=None):
+        if sources is None: sources = [current_img];
+        if sink is None: sink = newest_sink;
+        transform_queue.append((sink.magic, command, [S.magic for S in sources]))
+        return
+    
+    
     if task.whiteBlack is not None:
         for (new_color, fuzzpcent, colorname) in zip(task.whiteBlack, task.wb_fuzzing, ('white','black')):
             if new_color is None: continue;
-            outpath = workdir / f"srcimg_replace_{colorname}.png"
-            replace_cmd = f"convert 'PNG:{current_img}' -fuzz {fuzzpcent}% {RGB.RecolorStr(colorname, new_color)} 'PNG:{outpath}'"
-            task.preprocessing_list.append((replace_cmd, outpath))
-            current_img = outpath # 'replace_white.png' is used as base for 'replace_black.png'
+            recolor = CreateSink(f"srcimg_recolor_{colorname}")
+            QueueTransform(f"convert {current_img.magic} -matte -fuzz {fuzzpcent}% {RGB.RecolorStr(colorname, new_color)}")
+            current_img = recolor # 'recolor_white.png' is used as base for 'recolor_black.png'
         
-        if (current_img != baseimg):
-            compositepath = workdir / f"srcimg_WB_recolor.png"
-            composite_cmd = f"composite 'PNG:{current_img}' 'PNG:{baseimg}' -compose Atop 'PNG:{compositepath}'"
-            task.preprocessing_list.append((composite_cmd, compositepath))
-            current_img = compositepath # keep as base for edge-highlight
-        # the last composite only exists to discard the transparency that always gets filled by replace_black
+        if (current_img.magic != baseimg.magic):
+            composite = CreateSink("srcimg_WB_recolor")
+            composite_cmd = f"composite {current_img.magic} {baseimg.magic} -compose Atop"
+            QueueTransform(composite_cmd, sources=[current_img, baseimg])
+            current_img = composite # keep as base for edge-highlight
+        # the last composite only exists to discard the transparency that always gets filled by recolor_black
         # for some reason, replacing 'Black' will also fill all transparent regions - replacing white doesn't
         # (the same behavior occurs when hex codes are used instead of name; #000000 / #000000FF / #00000000)
     
     if task.edge_color is not None:
-        (recolor_cmd, edge_image) = RGB.EdgeHighlight(baseimg, task.edge_color, task.edgeRadius) # edge-detect baseimg, NOT current
-        task.preprocessing_list.append((recolor_cmd, edge_image))
+        edge_image = CreateSink("srcimg_edge")
+        recolor_cmd = RGB.EdgeHighlightCMD(task.edge_color, task.edgeRadius)
+        QueueTransform(recolor_cmd.format(baseimg.magic), sources=[baseimg]) # edge-detect baseimg, NOT current
         baseimg = current_img; current_img = edge_image
-        # ^ preserving 'replace_black.png' in baseimg for final composite
+        # ^ preserving 'recolor_black.png' in baseimg for final composite
     
-    if (current_img != baseimg): # final composite and updating task.image_source
-        final_output = workdir / "srcimg_preprocessed.png"
-        compositecmd = f"composite 'PNG:{current_img}' 'PNG:{baseimg}' -compose Atop 'PNG:{final_output}'"
-        task.preprocessing_list.append((compositecmd, final_output))
-        task.image_preprocessed = current_img = final_output
+    if (current_img.magic != baseimg.magic): # final composite and updating task.image_preprocessed
+        final_output = CreateSink("srcimg_preprocessed")
+        compositecmd = f"composite {current_img.magic} {baseimg.magic} -compose Atop"
+        QueueTransform(compositecmd, sources=[current_img, baseimg])
+        current_img = final_output
     
     for (scale_value, scale_suffix) in scales:
         scale_text = ('' if (scale_value == 100) else f"-scale {scale_value}%")
-        new_img = workdir/f"srcimg{scale_suffix}.{task.primary_format.lower()}"
-        command = f"convert 'PNG:{current_img}' {task.crop} -strip {scale_text} '{task.primary_format.upper()}:{new_img}'"
-        task.preprocessing_list.append((command, new_img))
+        scaled_img = CreateSink(f"srcimg{scale_suffix}", task.primary_format)
+        QueueTransform(f"convert {current_img.magic} {task.crop} -strip {scale_text}")
+        task.image_preprocessed.append(scaled_img)
+        # TODO: scaled sources should also be stored in image_preprocessed?
+    
+    for (sink_magic, command, source_magics) in transform_queue:
+        command_list = []; print(f"resolving command: '{command}' -> {sink_magic}")
+        sink = magic_map[sink_magic]
+        
+        resolved_sources = [*zip(*[
+            magic_map[magic_str].QuoteSource()
+            for magic_str in source_magics
+        ])]
+        
+        for (output_path, input_path_tuple) in zip(sink.QuoteSource(), resolved_sources):
+            new_command = command # python is fucking retarded - reassigning 'command' doesn't work and 'nonlocal' isn't allowed
+            for (input_magic, input_path) in zip(source_magics, input_path_tuple):
+                new_command = new_command.replace(input_magic, input_path, 1)
+            command_list.append(f"{new_command} {output_path}")
+        
+        expanded_commands[sink_magic] = command_list
+        task.preprocessing_cmds.extend(command_list)
+    
+    # creating ./miff_frames_scale50/, ./png_frames/... etc
+    for frame_source in task.image_preprocessed:
+        print(f"FRAME SOURCE: {frame_source.safe_filename}")
+        current_source = frame_source
+        for frameformat in task.frame_formats:
+            print(f"CURRENT_SOURCE: {current_source.safe_filename} | FRAME_FORMAT: {frameformat}")
+            framedir_name = frame_source.safe_filename.replace('srcimg', f'{frameformat.lower()}_frames')
+            framedir_dest = CreateSink(framedir_name, frameformat, current_source)
+            task.frame_directories[framedir_name] = (current_source, framedir_dest)
+            if(frameformat == task.primary_format): current_source = framedir_dest;
+            # frame_source is updated so that non-primary frame-formats (PNG) can just copy from the primary one
     
     task.did_preprocess_img = True
-    return task.image_preprocessed # still None unless edge/WB-recoloring was performed
+    return expanded_commands # still None unless edge/WB-recoloring was performed
 
 
 # expects parsed scale-strings (Task.ParseScales)
@@ -256,61 +345,84 @@ def SetupFramesDirectories(task:TaskT, scales:list[tuple[int,str]]):
 
 
 def GenerateFrames(task:TaskT, enumRotations:list[tuple[str,str]]) -> tuple[list[str],list[str],list[str],list[str],list[str]]:
-    assert(task.image_source.exists() and (task.image_source.parent == task.working_path))
+    assert((srcpath := task.image_source.srcpath).exists() and (srcpath.parent == task.working_path))
     assert(task.working_path.exists() and task.working_path.is_dir())
     assert(len(task.frame_formats) > 0)
-    index_len = len(enumRotations[0][0]) # number of digits to use in printf sequence 
+    index_len = task.image_source.digit_count # number of digits to use in printf sequence 
     
     scales = ParseScales(task.rescales)
     directories = SetupFramesDirectories(task, scales)
     
     preprocess_commands = (
         [] if (not task.did_preprocess_img) else
-        [C for (C,_) in task.preprocessing_list]
+        task.preprocessing_cmds
     )
     if (not task.did_preprocess_img):
-        new_srcimg = ImagePreprocess(task) # TODO: need to update global SRCIMG?
-        for (command, out_img) in task.preprocessing_list:
-            # if out_img == final_img: preprocess_commands.append(command); continue;
-            # if out_img.exists(): print(f"skipping preprocessing (already exists): '{out_img}'"); continue;
-            preprocess_commands.append(command)
+        expanded_commands = ImagePreprocess(task) # TODO: need to update global SRCIMG?
+        preprocess_commands = task.preprocessing_cmds
+    
+    framegen_commands = []
+    frame_conversions = [] # commands filling derivative directories (png_frames)
+    for (dest_name, (frame_source, frame_output)) in task.frame_directories.items():
+        if (len(frame_source.source_frames) <= 1):
+            frame_source.source_frames = [frame_source.source_frames[0]*len(enumRotations)] # repeating single-image to match length of enumRotations (for zip later)
+        if (len(frame_output.source_frames) <= 1):
+            frame_output.source_frames = [(frame_output.srcpath/f"frame{index}.{frame_output.image_format.lower()}") for (index,_) in enumRotations]
+        
+        # generating frames (performing modulation) in primary-format (MPC/MIFF)
+        if ((dest_fmt := frame_output.image_format) == task.primary_format):
+            (src_frames, dest_frames) = (frame_source.QuoteSource(), frame_output.QuoteSource())
+            framegen_commands.extend([
+                f"convert {src_frame} -scene {index} -modulate 100,100,{rotation} {dest_frame}"
+                for (src_frame, dest_frame, (index, rotation)) in zip(src_frames, dest_frames, enumRotations)
+            ])
+            continue
+        
+        # derivative frame directory (png_frames); just converting miff_frames to PNG (avoiding duplicate modulation)
+        from_glob = f"'{task.primary_format}:{frame_source.srcpath}/frame*.{task.primary_format.lower()}'"
+        dest_glob = f"'{dest_fmt}:{frame_output.srcpath}/frame%0{index_len}d.{dest_fmt.lower()}'"
+        matte_arg = ('+matte' if ('APNG' in task.output_fileformats) and (dest_fmt=='PNG') else '')
+        frame_conversions.append(f"convert {from_glob} {matte_arg} +adjoin {dest_glob}")
+    
+    framegen_commands.extend(frame_conversions)
+    
     
     # PNG frames should just be directly converted from the primary format (MPC/MIFF)
     # only generate frames for primary format; frames in other formats will be converted from these
-    source_frame_dirs = [ DIR for DIR in directories if (DIR['frameformat'] == task.primary_format) ]
-    
-    framelists = [[(
-          (index,rotation), (DIR['frames_directory']/f"frame{index}.{DIR['frameformat'].lower()}")
-        ) for (index,rotation) in enumRotations
-    ] for DIR in source_frame_dirs ]
-    
-    framegen_commands = [
-        f"convert '{DIR['source_format']}:{DIR['srcimg']}' -scene {index} -modulate 100,100,{rotation} '{DIR['frameformat']}:{frame}'"
-        for (DIR, framelist) in zip(source_frame_dirs, framelists)
-        for ((index, rotation), frame) in framelist
-    ]
-    
-    # PNG-frames are converted from the primary (MPC/MIFF) frames instead of generating them all seperately
-    derivative_mapping = [
-        (SRC, DER)
-        for DER in directories
-        for SRC in source_frame_dirs
-        if ((DER['frameformat'] != task.primary_format) and 
-            (DER['scale'] == SRC['scale']))
-    ]
-    
-    for (SRC, DER) in derivative_mapping:
-        from_glob = f"'{task.primary_format}:{SRC['frames_directory']}/frame*.{task.primary_format.lower()}'"
-        dest_glob = f"'{DER['frameformat']}:{DER['frames_directory']}/frame%0{index_len}d.{DER['frameformat'].lower()}'"
-        matte_arg = ('+matte' if ('APNG' in task.output_fileformats) and (DER['frameformat']=='PNG') else '')
-        framegen_commands.append(f"convert {from_glob} {matte_arg} +adjoin {dest_glob}")
-        # '+matte' removes alpha channel; ensuring black background for APNG (transparency renders as white in browsers)
-    
+    # source_frame_dirs = [ DIR for DIR in directories if (DIR['frameformat'] == task.primary_format) ]
+    # 
+    # framelists = [[(
+    #       (index,rotation), (DIR['frames_directory']/f"frame{index}.{DIR['frameformat'].lower()}")
+    #     ) for (index,rotation) in enumRotations
+    # ] for DIR in source_frame_dirs ]
+    # 
+    # framegen_commands = [
+    #     f"convert '{DIR['source_format']}:{DIR['srcimg']}' -scene {index} -modulate 100,100,{rotation} '{DIR['frameformat']}:{frame}'"
+    #     for (DIR, framelist) in zip(source_frame_dirs, framelists)
+    #     for ((index, rotation), frame) in framelist
+    # ]
+    # 
+    # # PNG-frames are converted from the primary (MPC/MIFF) frames instead of generating them all seperately
+    # derivative_mapping = [
+    #     (SRC, DER)
+    #     for DER in directories
+    #     for SRC in source_frame_dirs
+    #     if ((DER['frameformat'] != task.primary_format) and 
+    #         (DER['scale'] == SRC['scale']))
+    # ]
+    # 
+    # for (SRC, DER) in derivative_mapping:
+    #     from_glob = f"'{task.primary_format}:{SRC['frames_directory']}/frame*.{task.primary_format.lower()}'"
+    #     dest_glob = f"'{DER['frameformat']}:{DER['frames_directory']}/frame%0{index_len}d.{DER['frameformat'].lower()}'"
+    #     matte_arg = ('+matte' if ('APNG' in task.output_fileformats) and (DER['frameformat']=='PNG') else '')
+    #     framegen_commands.append(f"convert {from_glob} {matte_arg} +adjoin {dest_glob}")
+    #     # '+matte' removes alpha channel; ensuring black background for APNG (transparency renders as white in browsers)
+    # 
     
     render_commands = []
     webp_rendercmds = []
     ffmpeg_commands = []
-    ffmpeg_begin = "ffmpeg -hide_banner -y -f image2 -framerate 30 -pattern_type sequence -i"
+    ffmpeg_begin = "ffmpeg -hide_banner -nostdin -y -f image2 -framerate 30 -pattern_type sequence -i" # TODO: get framerate
     webp_options = "-quality 100 -define webp:thread-level=1 -define webp:lossless=true -define webp:method=6 -define webp:use-sharp-yuv=true"
     
     for (outfmt, (scaleval, scalestr), final_destination) in task.expected_outputs:
