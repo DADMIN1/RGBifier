@@ -2,6 +2,7 @@ import pathlib
 import tempfile
 import subprocess
 import os
+import json
 
 from collections import Counter
 from datetime import datetime
@@ -273,12 +274,12 @@ def RotateMagickLogs(toplevel:pathlib.Path, keep_limit:int, verbose=False) -> pa
     return new_logdir
 
 
-def MakeImageSources(workdir:pathlib.Path, input_file:pathlib.Path, max_frames:int|None=None) -> (Task.ImageSourceT, pathlib.Path):
+def MakeImageSources(workdir:pathlib.Path, input_file:pathlib.Path, max_frames:int|None=None) -> (Task.ImageSourceT, pathlib.Path, dict|None):
     """
     :param workdir: temp subdirectory for image-processing
     :param input_file: image being RGBified; copied to workdir
     :param max_frames: limit number of frames extracted from video source
-    :return: ImageSource
+    :return: ImageSource, baseimage-path, stream_info (for video sources)
     """
     assert(workdir.exists() and workdir.is_dir())
     assert(input_file.exists() and input_file.is_file() and (input_file.parent != workdir))
@@ -293,6 +294,7 @@ def MakeImageSources(workdir:pathlib.Path, input_file:pathlib.Path, max_frames:i
     og_suffix = (input_file.suffixes[-1].removeprefix('.') if (len(input_file.suffixes) > 0) else 'PNG').lower()
     assert(og_suffix in ('png','mp4')), f"no implementation for input-format: {og_suffix}"
     is_animated = (og_suffix == 'mp4') # TODO: figure out how to test gif/webp for animation
+    stream_info = None
     
     # baseimg: copy of unmodified original
     # srcimg: transcoded / preprocessed image optimized for target pipelines
@@ -306,46 +308,96 @@ def MakeImageSources(workdir:pathlib.Path, input_file:pathlib.Path, max_frames:i
         os.system(f"cp --verbose '{input_file}' '{baseimg_path}'")
     
     print("preprocessing baseimg...")
-    # TODO: extract audio, if it exists
-    # TODO: get framerate (Task.py line 425)
     if is_animated:
         source.is_animated = True
         prefix = 'frame'; suffix = '.png'
         
-        if src_path.exists(): print(f"skipping srcimg creation (already exists)");
+        print(f"\n{'_'*120}\n")
+        print("ffprobing for audio/video streams...")
+        ffprobe_path = workdir / "ffprobe_info.json"
+        ffprobe_comm = f"ffprobe -hide_banner -loglevel warning -show_streams '{baseimg_path}' -output_format json"
+        ffprobe_info = json.loads(subprocess.check_output(ffprobe_comm, shell=True, encoding="utf-8"))
+        print(f"{'_'*120}\n")
+        
+        with ffprobe_path.open(mode='w', encoding='utf-8') as ffprobe_file:
+            json.dump(ffprobe_info, ffprobe_file, indent=2)
+        
+        stream_info = { stream["codec_type"]:stream for stream in ffprobe_info["streams"] }
+        if ((video_stream := stream_info.get('video', None)) is None):
+            print("[ERROR] no video stream found!!")
+            print(json.dumps(stream_info, indent=2))
+            print("exiting...\n"); exit(4)
+        
+        framecount = (int(video_stream['nb_frames']))
+        index_length = 1+int(RGB.log10(framecount-1)) # length of digit-strings in numbered filenames
+        # this calculation: ^ assumes incremental numbering starting at ZERO! (indexing from 1 would not subtract)
+        
+        dimensions = [video_stream[D] for D in ('width', 'height')] # integers
+        framerates = [video_stream[R] for R in ("r_frame_rate", "avg_frame_rate")] # "60/1"
+        if (framerates[0] != framerates[1]): print("[WARNING] r/avg framerates mismatch!");
+        # note that "duration" might be slightly different between the video/audio streams,
+        # due to differences in the ratios used as the 'time_base' between the two streams;
+        # "time_base" for a video might be ~'1/15000', audio is likely '1/44100' (44100Hz).
+        # formula: duration = "time_base" x "duration_ts"
+        framerate = int(framerates[0].removesuffix("/1"))
+        duration = (float(video_stream["duration"]))
+        WxH = 'x'.join([str(D) for D in dimensions])
+        
+        task_info = stream_info["task_info"] = {
+            "acodec": None,
+            "vcodec": video_stream['codec_name'],
+            "extracted_audio_path": None,
+            "index_length": index_length,
+            "framecount": framecount,
+            "frames_max": max_frames,
+            "dimensions": dimensions,
+            "framerate": framerate,
+            "duration": duration,
+        }
+        
+        # TODO: looks like sometimes the 'color_space' lookup fails (try re-feeding an output video)
+        print(f"[VIDEO INFO] {safe_filename}.{og_suffix} [{video_stream['codec_name']}]")
+        (aspect_ratio, bpp) = (video_stream['display_aspect_ratio'], str(video_stream['bits_per_raw_sample']))
+        print(info_string := "{} ({}) @{}fps - {:.3f}s".format(WxH, aspect_ratio, framerate, float(duration)))
+        print("{}/{} [{}]".format(*[video_stream[f"codec_{K}"] for K in ('name', 'tag_string', 'long_name')]))
+        print(' '.join([f"depth:{bpp}-bit", *[f"{K}:{video_stream[K]}" for K in ('pix_fmt', 'color_space')]]))
+        if ((max_frames is not None) and ((max_frames >= framecount) or (max_frames < 0))): max_frames = None;
+        print(f"frame-count: {framecount} {f'(limited to {max_frames})' if (max_frames is not None) else ''}")
+        
+        if ((audio_stream := stream_info.get('audio', None)) is not None):
+            print(f"\n[AUDIO INFO] {safe_filename}.{og_suffix} [{(acodec_suffix := audio_stream['codec_name']).upper()}]")
+            print("acodec: {}/{} [{}]".format(*[audio_stream[f"codec_{K}"] for K in ('name', 'tag_string', 'long_name')]))
+            print(f"{audio_stream['channels']}-channel {audio_stream['channel_layout']} @{audio_stream['sample_rate']}Hz")
+            extracted_audio_path = workdir / f"baseimg_extracted_audio.{acodec_suffix}" # ffmpeg mandates that a matching file-extension is provided
+            audio_extraction_cmd = f"ffmpeg -hide_banner -loglevel warning -nostdin -n -vn -i '{baseimg_path}' -codec:a copy '{extracted_audio_path}'"
+            if not extracted_audio_path.exists(): subprocess.check_output(audio_extraction_cmd, shell=True, encoding="utf-8");
+            task_info["acodec"] = acodec_suffix; task_info["extracted_audio_path"] = extracted_audio_path;
+        print(f"{'_'*120}\n")
+        # TODO: AAC audio should use '.m4a' extension? # https://trac.ffmpeg.org/wiki/Encode/AAC
+        # using '.aac' causes ffmpeg to complain when recombining the audio/video - "[aac] Estimating duration from bitrate, this may be inaccurate"
+        
+        if src_path.exists(): print(f"skipping srcimg frame-extraction (already exists)");
         else:
             print("extracting frames from baseimg...")
             os.system(f"mkdir --verbose '{src_path}'")
             
-            # ffmpeg numbers the extracted frames from index '1' by default, not '0'
-            status = os.system(f"ffmpeg -hide_banner -nostdin -n -i '{baseimg_path}' -f image2 -start_number 0 '{src_path}/{prefix}%d{suffix}'")
+            frame_path = src_path / f"{prefix}%0{index_length}d{suffix}"
+            # "-start_number 0": ffmpeg numbers the extracted frames from index '1' by default, not '0'
+            status = os.system(f"ffmpeg -hide_banner -loglevel warning -nostdin -n -an -i '{baseimg_path}' -f image2 -start_number 0 '{frame_path}'")
             if (status != 0): print(f"ffmpeg frame-extraction exited with nonzero status: {status}; exiting..."); exit(4);
         
-        # normalizing filename lengths with zero-padding
-        framelist = [*src_path.glob(f"{prefix}*{suffix}")]; assert(len(framelist) > 0), "must have frames!!";
-        index_len = 1 + int(RGB.log10(len(framelist) - 1)) # length of digit-strings in numbered filenames
-        # this calculation ^ assumes incremental numbering starting at ZERO! (indexing from 1 would use "len" instead of "len-1")
-        renameList = [
-            (frame, f'{prefix}{num.zfill(index_len)}{suffix}') for frame in framelist
-            if (index_len > len(num := frame.name.removeprefix(prefix).removesuffix(suffix)))
-        ] # when the file-number's length matches index_len, zero-padding would not change it
-        for (frame, newname) in renameList: frame.rename(frame.with_name(newname).absolute());
-        
-        source.source_frames = [*src_path.glob(f"{prefix}{'[0-9]'*index_len}{suffix}")] # 'frame[0-9][0-9][0-9].png'
-        #padfstr = f"%0{index_len}d"
-        
-        framecount = len(source.source_frames)
-        if ((max_frames is not None) and ((max_frames >= framecount) or (max_frames < 0))): max_frames = None;
-        source.source_frames = sorted(source.source_frames)[:max_frames]
-        print(f"source frames: {framecount} {f'(limited to {max_frames})' if max_frames is not None else ''}")
-        source.frame_count = (max_frames if (max_frames is not None) else framecount)
-        source.index_length = index_len
+        framelist = sorted([*src_path.glob(f"{prefix}{'[0-9]'*index_length}{suffix}")]) # 'frame[0-9][0-9][0-9].png'
+        assert(len(framelist) == framecount), "unexpected number of extracted frames!";
+        source.frame_count = FC = (framecount if (max_frames is None) else max_frames);
+        source.source_frames = framelist[:FC]
+        source.index_length = index_length
+        task_info['frames_max'] = FC
     else:
         os.system(f"cp --verbose '{baseimg_path}' '{src_path}'")
         print(f"preprocessed source created: '{src_path}'")
     
     print("") # newline
-    return source, baseimg_path
+    return (source, baseimg_path, stream_info)
 
 
 def SubCommand(cmdline:list[str]|str, logname:str|None = "main", isCmdSequence:bool = False):
@@ -394,6 +446,7 @@ def SubCommand(cmdline:list[str]|str, logname:str|None = "main", isCmdSequence:b
 
 def SavePreprocessingCommands(workdir:pathlib.Path, expanded_commands:dict):
     better_names = {
+        "baseimg_primary_format": expanded_commands.get("$$baseimg_primary_format$$", None),
         "recolor_white": expanded_commands.get("$$srcimg_recolor_white$$", None),
         "recolor_black": expanded_commands.get("$$srcimg_recolor_black$$", None),
         "WB_recolor": expanded_commands.get("$$srcimg_WB_recolor$$", None),
@@ -441,8 +494,17 @@ def Main(identify_srcimg=False):
     print(f"output_directory resolved to: {output_directory}")
     Globals.Break("PARSE_ONLY") # select with '--parse-only 2'
     
-    (source, baseimg) = MakeImageSources(workdir, args.image_path)
+    frames_max = None
+    (source, baseimg, stream_info) = MakeImageSources(workdir, args.image_path, frames_max)
     srcimg = source.srcpath
+    
+    if stream_info is None:
+        task_info = None;
+        frames_max = 000;
+    else:
+        task_info = stream_info['task_info']
+        frames_max = task_info['frames_max']
+        PrintDict(task_info, "ffprobe_info")
     
     log_directory = RotateMagickLogs(workdir.parent, main_config["log_limit"])
     Globals.UpdateGlobals(workdir, srcimg, log_directory) # dbgprint=True
@@ -470,11 +532,12 @@ def Main(identify_srcimg=False):
     task = Task.TaskT(
         workdir,
         source,
+        task_info,
         args.crop,
         args.gravity,
         args.scales,
         color_opts,
-        'MIFF',
+        ('MPC' if (stream_info is None) else 'MIFF'), # usually OOM with video inputs
         output_filename,
         output_directory,
         args.output_formats,
@@ -488,14 +551,15 @@ def Main(identify_srcimg=False):
     #     print(f"updated srcimg path: {srcimg} -> {new_srcimg}\n")
         # srcimg = new_srcimg
     
-    preprocess_batch_commands = SavePreprocessingCommands(workdir, expanded_commands)
-    SubCommand(preprocess_batch_commands, "manual_preprocessing", isCmdSequence=True)
+    if (Globals.MAGICKLIBRARY == "GM"):
+        preprocess_batch_commands = SavePreprocessingCommands(workdir, expanded_commands)
+        SubCommand(preprocess_batch_commands, "manual_preprocessing", isCmdSequence=True)
     
     expected_outputs = Task.FillExpectedOutputs(task)
     print('\n'); assert(len(expected_outputs) > 0), "no expected outputs"
     
     # command_names = ("preprocessing", "frame_generation", "rendering")
-    commands = Task.GenerateFrames(task, RGB.EnumRotations(args.stepsize, source.frame_count))
+    commands = Task.GenerateFrames(task, RGB.EnumRotations(args.stepsize, frames_max))
     (webp_rendercmds, ffmpeg_commands) = commands[-2:]; commands = commands[:3]
     
     cmd_names = ("preprocessing", "frame_generation", "rendering", "rendering_webp", "rendering_ffmpeg")
@@ -513,10 +577,7 @@ def Main(identify_srcimg=False):
     
     if (use_IM := (Globals.MAGICKLIBRARY == "IM")): batch_commands = []; # prevents GM-only cmds
     batch_zip = zip(cmd_names, (batch_commands if (Globals.MAGICKLIBRARY == "GM") else commands))
-    # for (cmds_name, commands) in batch_zip: SubCommand(commands, cmds_name, isCmdSequence=use_IM)
-    for (cmds_name, commands) in batch_zip:
-        if cmds_name == "preprocessing": continue;
-        SubCommand(commands, cmds_name, isCmdSequence=use_IM)
+    for (cmds_name, commands) in batch_zip: SubCommand(commands, cmds_name, isCmdSequence=use_IM)
     if  (len(webp_rendercmds) > 0): SubCommand(webp_rendercmds, cmd_names[3], isCmdSequence=True)
     if  (len(ffmpeg_commands) > 0): SubCommand(ffmpeg_commands, cmd_names[4], isCmdSequence=True)
     
@@ -529,7 +590,6 @@ def Main(identify_srcimg=False):
     ]
     SubCommand(move_output_cmd, logname=None, isCmdSequence=True)
     
-    print("\ndone\n")
     return
 
 
@@ -537,3 +597,4 @@ if __name__ == "__main__":
     print(f"program path: {Globals.PROGRAM_DIR}")
     print(f"this file: {pathlib.Path(__file__)}")
     Main()
+    print("\ndone\n")

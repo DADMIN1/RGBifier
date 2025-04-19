@@ -59,16 +59,17 @@ def HueRotations(stepsize:float) -> list[str]:
     fmtstr = '{' + f':3.{topPrecision}f' + '}' # assume 3 leading digits (range is 100-300)
     rotation_strs = [fmtstr.format(N) for N in rotationSteps]
     assert((strs_setlen := len(set(rotation_strs))) == (strs_len := len(rotation_strs))), f"name collision occurred! [#rotation_strs: {strs_len} | #unique: {strs_setlen}]";
-    print(f"stepsize: {stepsize:.{estPrecision}f} | rotation steps: {strs_len}")
+    print(f"stepsize: {stepsize:.{estPrecision}f} | rotation steps: {len(rotation_strs)}")
     return rotation_strs
 
 
-def EnumRotations(stepsize:float, length:int=200) -> list[tuple[str,str]]:
-    assert(length > 0), "rotation length must be positive";
+def EnumRotations(stepsize:float, length:int = 0) -> list[tuple[str,str]]:
+    assert(length >= 0), "rotation length must be positive";
     rotation_strs = HueRotations(stepsize)
-    extended_rotations = rotation_strs
-    for _ in range(length//200): extended_rotations.extend(rotation_strs);
-    rotation_strs = extended_rotations[:length]; assert(len(rotation_strs) == length);
+    if (length != 0):
+        extended_rotations = rotation_strs.copy()
+        while(len(extended_rotations) < length): extended_rotations.extend(rotation_strs);
+        rotation_strs = extended_rotations[:length]; assert(len(rotation_strs) == length);
     padding = 1 + int(log10(len(rotation_strs)))
     enumRotations = [
         (str(index).zfill(padding), rotation)
@@ -191,7 +192,7 @@ def GenerateCommands(stepsize:float, writeMPC:bool=True, writePNG:bool=False, wr
 
 
 # TODO: generate colormap without 'remap'
-# TODO: handle GIF/video inputs (divide into frames and interpolate between them)
+# TODO: handle GIF inputs (divide into frames and interpolate between them)
 # TODO: hwaccel with ffmpeg
 
 
@@ -226,9 +227,9 @@ def EdgeHighlightCMD(edge_color:int|str, edge_radius) -> str:
         recolor_mid = f"-threshold 25% -channel rgba -modulate 100,0 -edge {edge_radius} -fuzz 99% {recolor_str}"
         # also, '-threshold' is required, otherwise the edge-detection goes insane and traces just about every pixel. Order matters; the outcome is slightly different if you move 'threshold' later.
     else: # saturation 0% and fuzz 100% to isolate all the non-white pixels
-        recolor_mid = f"-matte -modulate 100,0 -edge {edge_radius} -fuzz 100% {recolor_str}"
-        # '-matte' is required when source has no transparency? otherwise background stays black instead of transparent 
-    return "convert {0} " + recolor_mid  # doesn't contain output; needs to be appended manually
+        # recolor_mid = f"-operator all Threshold-Black 25% -operator all Threshold-White 75% -modulate 100,0 -edge {edge_radius} -fuzz 100% {recolor_str}"
+        recolor_mid = f"-modulate 10,0 -edge {edge_radius} -fuzz 100% {recolor_str}"
+    return "convert {0} -contrast -contrast " + recolor_mid  # doesn't contain output; needs to be appended manually
 
 
 def argstr_GIF(numRotations:int|None = None):
