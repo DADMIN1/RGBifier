@@ -520,6 +520,7 @@ def Main(identify_srcimg=False):
     if  (len(webp_rendercmds) > 0): SubCommand(webp_rendercmds, cmd_names[3], isCmdSequence=True)
     if  (len(ffmpeg_commands) > 0): SubCommand(ffmpeg_commands, cmd_names[4], isCmdSequence=True)
     
+    if args.nowrite: print('skipping final writes!!'); return;
     print(f"moving outputs to final destinations...")
     checked_outputs = Task.CheckExpectedOutputs(task)
     move_output_cmd = [

@@ -14,9 +14,9 @@ def FilterText(text:str) -> str:
     return text
 
 
-def PrintDict(D:dict, name=None):
-    if name is not None: print(f"{name} = "+"{ ");
-    for (k,v) in D.items(): print(f"  {k}: {repr(v)},");
+def PrintDict(D:dict, name = None):
+    if name is not None: print("{} = ".format(name)+'{');
+    for (k,v) in D.items(): print(f"  {k}: {repr(v)}, ");
     if name is not None: print("}\n");
 
 
@@ -83,7 +83,7 @@ def ParseCmdline(arglist:list[str]|None = None, *, debug_mode=False, ignore_inpu
     """ 
     :param arglist: additional args parsed before commandline
     :param debug_mode: disable exit_on_error and most asserts
-    :param ignore_input_path: try to ignore argparse bullshit
+    :param ignore_input_path: try to ignore argparse nonsense
     :return: parsed-args, unless '--help' or debug_mode
     ignore_input_path will match debug_mode unless specified
     """
@@ -128,6 +128,7 @@ def ParseCmdline(arglist:list[str]|None = None, *, debug_mode=False, ignore_inpu
     group_relopt.add_argument("--relative-img", action="store_true", help="reinterpret the output-directory relative to location of source-image")
     group_relopt.add_argument("--relative-cwd", action="store_true", help="reinterpret the output-directory relative to CWD (currrent directory)")
     group_relopt.add_argument("--relative-tmp", action="store_true", help="reinterpret the output-directory relative to RGB_TOPLEVEL (tmpfs dir)")
+    group_relopt.add_argument('--nowrite', action="store_true", help="disables moving outputs to their final destinations; leaving them in /tmp/")
     # TODO: explain interpretation of output-path and behavior of relative flags
     
     # parser.add_argument("--fps", dest="fps", type=int, default=60, help="FPS of RGB-ified video (default 60)")
@@ -185,7 +186,7 @@ def ParseCmdline(arglist:list[str]|None = None, *, debug_mode=False, ignore_inpu
     
     # the lambda given for 'type' allows lowercase letters to be passed
     group_recolor.add_argument("--remap", choices=['W','B','WB','BW'], type=lambda S:S.upper(), help="recolor white and/or black areas")
-    group_recolor.add_argument("--fuzz", metavar="int[%]", type=MaybePercent, nargs=2, default=(10, 50), help="fuzz-percent for white and black")
+    group_recolor.add_argument("--fuzz", metavar="int[%]", type=MaybePercent, nargs=2, default=(15, 15), help="fuzz-percent for white and black")
     group_recolor.add_argument("--white", metavar="RRGGBB[AA]", type=StrHex, default="0xFF0000", help="remapped white")
     group_recolor.add_argument("--black", metavar="RRGGBB[AA]", type=StrHex, default="0x0000FF", help="remapped black")
     
@@ -227,6 +228,12 @@ def ParseCmdline(arglist:list[str]|None = None, *, debug_mode=False, ignore_inpu
     
     parsed_args.image_path = parsed_args.image_path.expanduser().resolve().absolute()
     print(f"(expanded) image_path: '{parsed_args.image_path}'")
+    
+    if parsed_args.nowrite:
+        print("\nrelocation of outputs is disabled (--nowrite)")
+        if parsed_args.autodelete: print("autodelete disabled; outputs would not be observable with '--nowrite'");
+        if (parsed_args.output_dir is not None): print(f"[WARNING] output-directory will be ignored (--nowrite): {parsed_args.output_dir}");
+        print('')
     
     # any args will be in a list appended to default, so just use that list if it exists 
     if (len(parsed_args.output_formats) > 1): parsed_args.output_formats = parsed_args.output_formats[1];
