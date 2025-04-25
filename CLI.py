@@ -110,29 +110,31 @@ def ParseCmdline(arglist:list[str]|None = None, *, debug_mode=False, ignore_inpu
     group_output = parser.add_argument_group("output-options")
     group_relopt = grp_relative.add_mutually_exclusive_group()
     # group_relopt = group_output.add_mutually_exclusive_group()
+    group_stepszs = parser.add_argument_group("modulation args")
     grp_transform = parser.add_argument_group("transformations")
     group_recolor = parser.add_argument_group("color-remapping")
     
     # grp_relative.title = None # prevents title from printing; leaving a single empty line above group
     
+    parser.add_argument("--print-only", nargs='?', metavar="limit", type=int, const=1, help="exit after printing the commands that would have been executed")
+    parser.add_argument("--parse-only", nargs='?', metavar="limit", type=int, const=1, help="exit after completing commandline parsing (and loading config)")
+    
     group_system.add_argument("--magick", choices=["IM","GM"], default="GM", help="select magick library (ImageMagick / GraphicsMagick)")
     group_system.add_argument("--tmpfs", dest="use_tmpfs", action="store_true", help="use tmpfs (RAM filesystem) for workdir and tempfiles - preventing all disk writes")
     #group_system.add_argument("--autodelete", dest="autodelete", action="store_true", default=True, help="wipe the (temp) working directory after processing")
     group_system.add_argument("--noclean", dest="autodelete", action="store_false", help="preserve temp-files (deleted by default - ignore the following 'default' message)")
+    group_system.add_argument('--nowrite', action="store_true", help="disables relocation of outputs to their final destinations")
     # TODO: fix the display of '--noclean'/autodelete's default message
-    group_system.add_argument("--print-only", nargs='?', metavar="limit", type=int, const=1, help="exit after printing the commands that would have been executed")
-    group_system.add_argument("--parse-only", nargs='?', metavar="limit", type=int, const=1, help="exit after completing commandline parsing (and loading config)")
     
     group_output.add_argument("--mkdir", action="store_true", help="create output-directory if necessary (all parents must already exist)")
     group_output.add_argument("--mkdir-parent", action="store_true", help="mkdir also creates any missing parent-directories (implies '--mkdir')")
     group_relopt.add_argument("--relative-img", action="store_true", help="reinterpret the output-directory relative to location of source-image")
     group_relopt.add_argument("--relative-cwd", action="store_true", help="reinterpret the output-directory relative to CWD (currrent directory)")
     group_relopt.add_argument("--relative-tmp", action="store_true", help="reinterpret the output-directory relative to RGB_TOPLEVEL (tmpfs dir)")
-    group_relopt.add_argument('--nowrite', action="store_true", help="disables moving outputs to their final destinations; leaving them in /tmp/")
     # TODO: explain interpretation of output-path and behavior of relative flags
     
     # parser.add_argument("--fps", dest="fps", type=int, default=60, help="FPS of RGB-ified video (default 60)")
-    # TODO: duration/fps/numloops/reverse
+    # TODO: fps/numloops/reverse
     
     scale_help = textwrap.dedent("""\
         suffix: '%%' denotes percentage-scaling (integer)
@@ -154,7 +156,23 @@ def ParseCmdline(arglist:list[str]|None = None, *, debug_mode=False, ignore_inpu
         FL = min(alphaLength, 2); alpha = ('0' * max((alphaLength-FL), 0))+('F' * FL)
         return f"0x{hex(int(num, 16)).removeprefix('0x').upper().zfill(count)}{alpha}"
     
-    def StrHex(num:str): return (StrHexIM(num), StrHexGM(num)); # need both until we know which library
+    def SplitHex(num:str): return '|'.join([num[I:I+2] for I in range(0,len(num),2)]);
+    
+    def StrHex(num:str):
+        IN = num.removeprefix('0x')
+        if ((badlen := len(IN)) > 8): # too long
+            print(f"[ERROR] Too many digits ({badlen}) in hex-value: {num} ({badlen-8} extra)")
+            print(f"\t{IN[:8]}|{IN[8:]}")
+            print(f"\tRRGGBBAA|{'^'*(badlen-8)}\n")
+        elif ((badlen % 2) != 0): # odd number of digits
+            RGB="RRGGBBAA"; padding = ' ' * ((padlen := (8 - badlen)) + (padlen//2));
+            print(f"[WARNING] uneven digit total in in hex-value: {num} ({badlen})");
+            print(f"\t{SplitHex(IN)}[_]{padding}", end='    '); print(f"[_]{IN[0]}|{SplitHex(IN[1:])}{padding}");
+            print(f"\t{SplitHex((RGB[:badlen]))}[{RGB[badlen]}]|{SplitHex(RGB[badlen+1:])}".removesuffix('|'), end='     ')
+            print(f"[{RGB[0]}]R{SplitHex(RGB)[2:]}\n")
+        values = (StrHexIM(num), StrHexGM(num)); # need both until we know which library
+        ASSERT(all([(len(color.removeprefix('0x')) <= 8) for color in values]), "TOO MANY DIGITS!!!");
+        return values
     
     def MaybePercent(num:str):
         num = int(float(num) * 100) if ('.' in num) else int(num.removesuffix('%'))
@@ -167,7 +185,11 @@ def ParseCmdline(arglist:list[str]|None = None, *, debug_mode=False, ignore_inpu
         but no conversion will be performed when the color has a specified alpha.
           Alpha: [opaque -> transparent]
           ImageMagick:    [0xFF -> 0x00]
-          GraphicsMagick: [0x00 -> 0xFF]"""
+          GraphicsMagick: [0x00 -> 0xFF]
+          
+          the '--alpha' option specifies the default transparency of other colors.
+          the range follows the GM convention: 0xFF means 'completely transparent'
+          interpretation is not influenced by IM/GM. default value (00) is opaque."""
     )
     # Alpha: [opaque -> transparent] || ImageMagick: [FF -> 00] || GraphicsMagick: [00 -> FF]
     # IM: [(opaque) 0xFF -> 0x00 (transparent)]
@@ -186,13 +208,47 @@ def ParseCmdline(arglist:list[str]|None = None, *, debug_mode=False, ignore_inpu
     
     # the lambda given for 'type' allows lowercase letters to be passed
     group_recolor.add_argument("--remap", choices=['W','B','WB','BW'], type=lambda S:S.upper(), help="recolor white and/or black areas")
-    group_recolor.add_argument("--fuzz", metavar="int[%]", type=MaybePercent, nargs=2, default=(15, 15), help="fuzz-percent for white and black")
+    group_recolor.add_argument("--alpha", metavar="[00 -> FF]", type=StrHex, default="0x00", help="default-alpha for edge and remap")
     group_recolor.add_argument("--white", metavar="RRGGBB[AA]", type=StrHex, default="0xFF0000", help="remapped white")
     group_recolor.add_argument("--black", metavar="RRGGBB[AA]", type=StrHex, default="0x0000FF", help="remapped black")
+    group_recolor.add_argument("--fuzz", metavar="int[%]", type=MaybePercent, nargs=2, default=(0, 0), help="fuzz-percent for white and black")
+    group_recolor.add_argument("--threshold", metavar="int[%]", type=MaybePercent, nargs=2, default=(10, 10), help="during remap, colors within this distance from white/black are forced to white/black")
+    
+    group_stepszs.add_argument("--stepsize", type=float, default=1.00, metavar='(float)', help="modulation per frame - 1/200th of full cycle")
+    group_stepszs.add_argument("--stepedge", type=float, metavar='(float)', help="override stepsize for edge-highlight")
+    group_stepszs.add_argument("--stepwhite", type=float, metavar='(float)', help="override stepsize for white-recolor")
+    group_stepszs.add_argument("--stepblack", type=float, metavar='(float)', help="override stepsize for black-recolor")
+    maxframesargs = group_stepszs.add_mutually_exclusive_group()
+    maxframesargs.add_argument("--framecap", type=int, metavar='(int)', help="limit the number of frames in output")
+    maxframesargs.add_argument("--duration", type=int, metavar='(int)', help="specifies number of frames in output")
+    
+    valid_fileformats = FormatList("GIF", "MP4", "APNG", "WEBP", "ALL")
+    group_output.add_argument("--format", dest="output_formats", metavar="fmt",
+        choices=valid_fileformats, nargs='+', action='append', default=["GIF"],
+        help=f"list of output formats: {valid_fileformats}\n"
+        +"names can be in lowercase and may have a leading dot ('.gif')\n"
+        +"animated WebP specifically requires ImageMagick (--magick=IM)\n"
+        +"MP4 and APNG outputs require ffmpeg"
+    )
+    
+    # TODO: option to minimize memory-usage by deleting intermediate frames immediately after their final use
+    valid_frameformats = FormatList('MPC','MIFF')
+    parser.add_argument("--tempformat",
+        choices=valid_frameformats,
+        type=lambda S:S.upper(),
+        help=textwrap.dedent("""\
+            frame-format used during intermediate processing.
+            'MPC' is the default for images, 'MIFF' for video.
+            select 'MIFF' instead if you're running out of memory.
+            
+            MPC offers significantly better performance, but also extremely high memory-usage.
+            MPC cannot be enabled unless tmpfs is also enabled to avoid excessive disk-writes
+            for MPC, I recommended allocating at least 32GB RAM for your tmpfs; 24GB minimum!
+            \b""") # prevents an annoying space being inserted before (default: )
+    )
     
     # printing usage would not display these because they haven't been added yet
-    missing_usage = "\t\tIMAGE [DIRECTORY] [--stepsize (float)] [--format fmt [fmt ...]]\n"
-    patched_usage = f"{parser.format_usage()}{missing_usage}"
+    patched_usage = f"{parser.format_usage()}\t\tIMAGE [DIRECTORY]\n"
     helpmsg = parser.format_help().removeprefix(parser.format_usage()) # removing incomplete usage from help
     if ((arglist is not None) and ('--help' in arglist)): print(f"{patched_usage}{helpmsg}\n"); return None;
     # TODO: unfortunately, the help section still won't contain entries for these options
@@ -212,16 +268,7 @@ def ParseCmdline(arglist:list[str]|None = None, *, debug_mode=False, ignore_inpu
     # this behavior cannot be avoided by disabling 'exit_on_error', and even when using 'parse_known_args' and 'parse_intermixed_args'.
     primary_args.add_argument("image_path", type=pathlib.Path, metavar="IMAGE", help="path of image being RGBified (this argument is mandatory)", nargs=(argparse.SUPPRESS if ignore_input_path else None))
     primary_args.add_argument("output_dir", type=ExplicitPath, metavar="DIRECTORY", nargs='?', help="output location - same as input by default")
-    primary_args.add_argument("--stepsize", type=float, default=1.00, metavar='(float)', help="modulation per frame - 1/200th of full cycle")
     
-    valid_fileformats = FormatList("GIF", "MP4", "APNG", "WEBP", "ALL")
-    group_output.add_argument("--format", dest="output_formats", metavar="fmt",
-        choices=valid_fileformats, nargs='+', action='append', default=["GIF"],
-        help=f"list of output formats: {valid_fileformats}\n"
-        +"names can be in lowercase and may have a leading dot ('.gif')\n"
-        +"animated WebP specifically requires ImageMagick (--magick=IM)\n"
-        +"MP4 and APNG outputs require ffmpeg"
-    )
     
     parsed_args = parser.parse_args(namespace=parsed_args)
     print(f"[parsed cmdline]: {parsed_args}\n")
@@ -233,6 +280,7 @@ def ParseCmdline(arglist:list[str]|None = None, *, debug_mode=False, ignore_inpu
         print("\nrelocation of outputs is disabled (--nowrite)")
         if parsed_args.autodelete: print("autodelete disabled; outputs would not be observable with '--nowrite'");
         if (parsed_args.output_dir is not None): print(f"[WARNING] output-directory will be ignored (--nowrite): {parsed_args.output_dir}");
+        if any([parsed_args.relative_img, parsed_args.relative_cwd, parsed_args.relative_tmp]): print("warning: '--relative' arg will be ignored (--nowrite)")
         print('')
     
     # any args will be in a list appended to default, so just use that list if it exists 
@@ -260,13 +308,52 @@ def ParseCmdline(arglist:list[str]|None = None, *, debug_mode=False, ignore_inpu
     if (FC := parsed_args.parse_only): Extend("PARSE_ONLY", FC);
     if (len(debug_flags)): Globals.ApplyDebugFlags(debug_flags);
     
-    if (edge_radius_given and (parsed_args.edge is None)):
+    
+    # if white or black were given, set 'remap' accordingly
+    remap_str = '' if (parsed_args.remap is None) else parsed_args.remap;
+    if any(colors_given := (
+        (parsed_args.white != StrHex(parser.get_default('white'))),
+        (parsed_args.black != StrHex(parser.get_default('black'))))):
+        for (color,given) in zip(('white','black'), (colors_given)):
+            if not given: continue;
+            if(color[0].upper() in remap_str): continue;
+            print(f"remapping-color given: '--{color}'")
+            remap_str += color[0].upper()
+        parsed_args.remap = remap_str
+    
+    # if parsed_args.stepwhite: ASSERT(('W' in remap_str), "stepwhite given without remap:W");
+    # if parsed_args.stepblack: ASSERT(('B' in remap_str), "stepblack given without remap:B");
+    for (color,given) in zip(('white','black'), (parsed_args.stepwhite, parsed_args.stepblack)):
+        if given is None: continue;
+        if(color[0].upper() in remap_str): continue;
+        print(f"alt-stepsize used: '--step{color}'")
+        remap_str += color[0].upper()
+        parsed_args.remap = remap_str
+    
+    
+    alpha = None; default_alpha = None
+    if (parsed_args.alpha == StrHex("0x00")): parsed_args.alpha = None; # defaulted
+    else: # alpha value was specified
+        parsed_args.alpha = parsed_args.alpha[(0 if (parsed_args.magick == 'IM') else 1)].removeprefix('0x')
+        (alpha, default_alpha) = (parsed_args.alpha[:2], parsed_args.alpha[-2:])
+        if (default_alpha not in ('00','FF')): print(f"[WARNING]: alpha is not using a default alpha-value: 0x{parsed_args.alpha[:-2]}[{default_alpha}]");
+        if ((middle := parsed_args.alpha[2:-2]) != '0000'): print(f"[WARNING]: alpha contains unexpected digits: 0x{alpha}[{middle}]{default_alpha}");
+        
+        if (parsed_args.magick == 'IM'): alpha = hex(int('0xFF',16) - int(alpha,16)).removeprefix('0x');
+        if not (parsed_args.remap or parsed_args.edge or edge_radius_given):
+            print("[WARNING] 'alpha' option will have no effect - specified without 'edge' or 'remap' active")
+            alpha = None; default_alpha = None;
+        parsed_args.alpha = alpha
+    
+    
+    if ((edge_radius_given or parsed_args.stepedge) and (parsed_args.edge is None)):
         print(f"edge-radius given with edge-color unspecified - using default value ({edgecolor_default})")
         parsed_args.edge = StrHex(edgecolor_default)
     
     if (parsed_args.edge):
         parsed_args.edge = parsed_args.edge[0 if (parsed_args.magick == 'IM') else 1]
         ASSERT(((L:=len(H:=(parsed_args.edge.removeprefix('0x')))) == 8), f"edgecolor hex '{H}' has invalid length: {L}")
+        if (alpha and parsed_args.edge.endswith(default_alpha)): parsed_args.edge = f"{parsed_args.edge[:-2]}{alpha}";
     
     if (parsed_args.remap):
         parsed_args.white = parsed_args.white[0 if (parsed_args.magick=='IM') else 1]
@@ -274,8 +361,14 @@ def ParseCmdline(arglist:list[str]|None = None, *, debug_mode=False, ignore_inpu
         for S in (parsed_args.white, parsed_args.black):
             ASSERT((L:=len(S.removeprefix('0x')) == 8), f"color-hexcode '{S}' has invalid length: {L}")
         ASSERT((all([(percent >= 0) and (percent <= 100) for percent in parsed_args.fuzz])), f"invalid fuzz percent! ({parsed_args.fuzz})")
-        if ('W' not in parsed_args.remap): parsed_args.white = None;
-        if ('B' not in parsed_args.remap): parsed_args.black = None;
+        if not (RW:=('W' in parsed_args.remap)): parsed_args.white = None;
+        if not (RB:=('B' in parsed_args.remap)): parsed_args.black = None;
+        if alpha:
+            if (RW and (W:=parsed_args.white).endswith(default_alpha)): parsed_args.white = f"{W[:-2]}{alpha}";
+            if (RB and (B:=parsed_args.black).endswith(default_alpha)): parsed_args.black = f"{B[:-2]}{alpha}";
+    
+    if (parsed_args.framecap is not None): ASSERT((parsed_args.framecap >= 0), "framecap must be positive");
+    if (parsed_args.duration is not None): ASSERT((parsed_args.duration >= 0), "duration must be positive");
     
     if debug_mode: print(""); # spacing after ASSERT-messages 
     print(parsed_args) # Namespace(...)
@@ -353,6 +446,32 @@ def ResolveOutputPath(parsed_args:argparse.Namespace, toplevel:pathlib.Path):
     return out_path
 
 
+def CalcDeltas(parsed_args:argparse.Namespace):
+    stepsize = parsed_args.stepsize
+    # because recolor_white is used as base for 'recolor_black'
+    # if (parsed_args.stepwhite and parsed_args.stepblack):
+    #     parsed_args.stepwhite = parsed_args.stepwhite - parsed_args.stepblack
+    
+    # noinspection PyUnboundLocalVariable
+    # ^ ignore BS warning about reference before assignment on 'delta'
+    stepsize_delta = {
+        name: delta
+        for (name, altstep) in zip(
+            ('edge','white','black'),
+            (parsed_args.stepedge,
+            parsed_args.stepwhite,
+            parsed_args.stepblack)
+        ) if (altstep is not None)
+        and ((delta:=(altstep-stepsize)) != 0)
+    }
+    # because recolor_white is used as base for 'recolor_black'
+    # this still isn't right because it applies the delta twice
+    # if (parsed_args.stepwhite and parsed_args.stepblack):
+    #     stepsize_delta['white'] = stepsize_delta['white'] - stepsize_delta['black']
+    
+    return stepsize_delta
+
+
 if __name__ == "__main__":
     import sys
     # note that default-args from user configs aren't loaded here
@@ -361,7 +480,9 @@ if __name__ == "__main__":
         assert(ParseCmdline(["--help"]) is None), "unexpected value returned by '--help' command";
         exit(0)
     
-    # ParseCmdline()
+    # got_args = ParseCmdline()
+    # stepsize_deltas = CalcDeltas(got_args)
+    # PrintDict(stepsize_deltas,"stepsizes")
     ParseCmdline(debug_mode=True)
     # ParseCmdline(debug_mode=False, ignore_input_path=True)
     # ParseCmdline(debug_mode=True, ignore_input_path=False)

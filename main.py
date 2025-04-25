@@ -8,6 +8,7 @@ from collections import Counter
 from datetime import datetime
 
 from CLI import (FilterText, PrintDict, ParseCmdline, ResolveOutputPath)
+from CLI import CalcDeltas as CalcStepDeltas
 import Globals
 import Config
 import Task
@@ -274,6 +275,9 @@ def RotateMagickLogs(toplevel:pathlib.Path, keep_limit:int, verbose=False) -> pa
     return new_logdir
 
 
+# noinspection PyUnresolvedReferences
+# ^ every lookup on video_stream/audio_stream (video_stream['nb_frames'])
+# triggers this BS warning: "Cannot find reference '[' in 'None'"
 def MakeImageSources(workdir:pathlib.Path, input_file:pathlib.Path, max_frames:int|None=None) -> (Task.ImageSourceT, pathlib.Path, dict|None):
     """
     :param workdir: temp subdirectory for image-processing
@@ -292,7 +296,7 @@ def MakeImageSources(workdir:pathlib.Path, input_file:pathlib.Path, max_frames:i
     # TODO: actually verify the filetype/encoding of baseimg
     if (len(input_file.suffixes) == 0): print("[WARNING] no suffix on input-file - assuming PNG");
     og_suffix = (input_file.suffixes[-1].removeprefix('.') if (len(input_file.suffixes) > 0) else 'PNG').lower()
-    assert(og_suffix in ('png','mp4')), f"no implementation for input-format: {og_suffix}"
+    assert(og_suffix in ('png', 'mp4')), f"no implementation for input-format: {og_suffix}"
     is_animated = (og_suffix == 'mp4') # TODO: figure out how to test gif/webp for animation
     stream_info = None
     
@@ -309,7 +313,7 @@ def MakeImageSources(workdir:pathlib.Path, input_file:pathlib.Path, max_frames:i
     
     print("preprocessing baseimg...")
     if is_animated:
-        source.is_animated = True
+        source.multisource = True
         prefix = 'frame'; suffix = '.png'
         
         print(f"\n{'_'*120}\n")
@@ -320,7 +324,10 @@ def MakeImageSources(workdir:pathlib.Path, input_file:pathlib.Path, max_frames:i
         print(f"{'_'*120}\n")
         
         with ffprobe_path.open(mode='w', encoding='utf-8') as ffprobe_file:
+            # noinspection PyTypeChecker
             json.dump(ffprobe_info, ffprobe_file, indent=2)
+            # opening files always triggers a BS warning:
+            # 'Expected type 'SupportsWrite[str]', got 'TextIO' instead'
         
         stream_info = { stream["codec_type"]:stream for stream in ffprobe_info["streams"] }
         if ((video_stream := stream_info.get('video', None)) is None):
@@ -408,11 +415,25 @@ def SubCommand(cmdline:list[str]|str, logname:str|None = "main", isCmdSequence:b
     """
     if (len(cmdline) == 0): print(f"[WARNING] skipping subcommand: empty cmdline! (logname: {logname})"); return;
     
-    print('_'*120); print(); L = "\n  "
-    subcmd_str = ('commandseq: [{1}{0}\n]' if isCmdSequence else 'subcommand: "{0}"')
-    print(subcmd_str.format((f",{L}".join(cmdline) if isCmdSequence else cmdline),L))
     if (log_dir := Globals.LOGGING_DIR) is None: print(f"[ERROR] no valid 'log_dir'"); return; 
     if not log_dir.exists(): print(f"creating log_dir: '{log_dir}'"); log_dir.mkdir();
+    
+    def RenameCommandIM(cmd):
+        (cmd_name, command_str) = cmd.split(' ', maxsplit=1)
+        if cmd_name not in ('convert','composite','mogrify'): return cmd;
+        return f'{cmd_name}-im6.q16 {command_str}'
+    
+    cmd_seq = (
+        (cmdline if isCmdSequence else [cmdline])
+        if (Globals.MAGICKLIBRARY == "GM") else [
+        RenameCommandIM(command) for command in (
+        cmdline if isCmdSequence else [cmdline])]
+    )
+    
+    print('_'*120); print(); L = "\n  "; cmd_rep = cmd_seq;
+    if (len(cmd_seq) == 1): cmd_rep = cmd_seq[0]; isCmdSequence = False;
+    subcmd_str = ('commandseq: [{1}{0}\n]' if isCmdSequence else 'subcommand: "{0}"')
+    print(subcmd_str.format((f",{L}".join(cmd_rep) if isCmdSequence else cmd_rep),L))
     
     # TODO: Skip logging if None
     skiplog = (logname is None)
@@ -431,13 +452,13 @@ def SubCommand(cmdline:list[str]|str, logname:str|None = "main", isCmdSequence:b
     # 'capturing' either stream means it won't get printed; set them to 'None' if you want them printed.
     
     # mode='a' - append to existing file, or create new
-    with log_filepath.open(mode='a', encoding="utf-8") as logfile:
-        cmdline_str = (cmdline if isinstance(cmdline,str) else ("\n" if isCmdSequence else " ").join(cmdline))
+    with (log_filepath.open(mode='a', encoding="utf-8") as logfile):
+        cmdline_str = (cmd_seq[0] if isinstance(cmdline,str) 
+                       else ("\n" if isCmdSequence else " ").join(cmd_seq))
         logfile.write(cmdline_str); logfile.write("\n\n"); logfile.flush()
-        cmd_seq = (cmdline if isCmdSequence else [cmdline])
-        for cmd in cmd_seq:
-            completed = subprocess.run(cmd, check=True, stdout=None, stderr=(logfile if not skiplog else None), encoding="utf-8", shell=(isinstance(cmd,str))) # prints stdout, logs stderr
-        if (completed.returncode != 0): print(f"[ERROR] nonzero exit-status: {completed.returncode}\n");
+        for cmd in cmd_seq: # prints stdout, logs stderr
+            completed = subprocess.run(cmd, check=True, stdout=None, stderr=(logfile if not skiplog else None), encoding="utf-8", shell=(isinstance(cmd,str)))
+            if (completed.returncode != 0): print(f"[ERROR] nonzero exit-status: {completed.returncode}\n");
         logfile.write('_'*120); logfile.write("\n\n")
     
     print("\n")
@@ -454,12 +475,18 @@ def SavePreprocessingCommands(workdir:pathlib.Path, expanded_commands:dict):
         "preprocessed": expanded_commands.get("$$srcimg_preprocessed$$", None),
         "final": expanded_commands.get("$$srcimg$$", None),
     }
+    print(f"keys: {expanded_commands.keys()}")
     
     # searching for scaled entries
     for magic in expanded_commands.keys():
-        if 'srcimg_scale' not in magic: continue;
-        scaletxt = magic.strip('$').removeprefix('srcimg_')
-        better_names[scaletxt] = expanded_commands[magic]
+        if 'srcimg_scale' in magic:
+            scaletxt = magic.strip('$').removeprefix('srcimg_')
+            better_names[scaletxt] = expanded_commands[magic]
+        elif '_modulation' in magic:
+            base_txt = magic.strip('$').removesuffix('_modulation').removeprefix('srcimg_')
+            better_names[base_txt].extend(expanded_commands[magic])
+            # very important to extend the pre-existing entry; to preserve overall correct order
+        else: continue;
     
     batchdir = workdir/"batchfile"
     batchdir.mkdir(exist_ok=True)
@@ -494,17 +521,25 @@ def Main(identify_srcimg=False):
     print(f"output_directory resolved to: {output_directory}")
     Globals.Break("PARSE_ONLY") # select with '--parse-only 2'
     
-    frames_max = None
+    frames_max = (args.duration if (isD := (args.duration is not None)) else args.framecap)
     (source, baseimg, stream_info) = MakeImageSources(workdir, args.image_path, frames_max)
     srcimg = source.srcpath
     
-    if stream_info is None:
-        task_info = None;
-        frames_max = 000;
-    else:
+    if (stream_info is not None):
         task_info = stream_info['task_info']
         frames_max = task_info['frames_max']
         PrintDict(task_info, "ffprobe_info")
+    else:
+        task_info = None;
+        (framecount, index_length) = RGB.EstimateSteps(args.stepsize)
+        if(frames_max is not None):
+            if isD: framecount = frames_max; # duration forces framecount
+            elif (frames_max >= framecount): frames_max = 0; # framecap above count gets disabled
+            else: framecount = frames_max; # framecap set below framecount reduces it to capacity
+            index_length = 1+int(RGB.log10(framecount-1));
+        source.frame_count  = framecount
+        source.indexlength = index_length
+    if (frames_max is None): frames_max = 0;
     
     log_directory = RotateMagickLogs(workdir.parent, main_config["log_limit"])
     Globals.UpdateGlobals(workdir, srcimg, log_directory) # dbgprint=True
@@ -523,10 +558,12 @@ def Main(identify_srcimg=False):
     print(f"original location: {args.image_path.parent.absolute()}")
     print(f"final: {(output_directory/output_filename).absolute()}")
     
+    primary_format = (args.tempformat if (args.tempformat is not None)
+                      else ('MPC' if(stream_info is None) else 'MIFF')) # usually OOM with video inputs
     
     color_opts = Task.ColorRemapT(
         (args.white, args.black) if args.remap else None,
-        args.fuzz, args.edge, args.edge_radius,
+        args.fuzz, args.threshold, args.edge, args.edge_radius,
     )
     
     task = Task.TaskT(
@@ -537,21 +574,20 @@ def Main(identify_srcimg=False):
         args.gravity,
         args.scales,
         color_opts,
-        ('MPC' if (stream_info is None) else 'MIFF'), # usually OOM with video inputs
+        primary_format,
         output_filename,
         output_directory,
         args.output_formats,
     )
     
-    expanded_commands = Task.ImagePreprocess(task)
-    # if (new_srcimg is not None):
-    #     new_srcimg = new_srcimg.srcpath
-    #     print(f"[ImagePreprocess] new srcimg path: {new_srcimg}")
-    #     Globals.UpdateGlobals(workdir, new_srcimg, log_directory)
-    #     print(f"updated srcimg path: {srcimg} -> {new_srcimg}\n")
-        # srcimg = new_srcimg
+    stepsize_deltas = CalcStepDeltas(args)
+    task.stepsize_deltas = stepsize_deltas
+    PrintDict(stepsize_deltas,"stepsizes")
+    print('\n')
     
+    # not necessary, but it's nice to seperate each preprocessing step
     if (Globals.MAGICKLIBRARY == "GM"):
+        expanded_commands = Task.ImagePreprocess(task)
         preprocess_batch_commands = SavePreprocessingCommands(workdir, expanded_commands)
         SubCommand(preprocess_batch_commands, "manual_preprocessing", isCmdSequence=True)
     

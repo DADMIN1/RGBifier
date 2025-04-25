@@ -6,15 +6,30 @@ class ColorRemapT():
     def __init__(self,
         whiteBlack:tuple[str|None,str|None]|None,
         wb_fuzzing:tuple[int,int],
+        thresholds:tuple[int,int],
         edge_color:str|None,
         edgeRadius:int):
       self.whiteBlack = whiteBlack
       self.wb_fuzzing = wb_fuzzing
+      self.thresholds = thresholds
       self.edge_color = edge_color
       self.edgeRadius = edgeRadius
       if self.whiteBlack is not None:
         assert(all([(percent >= 0) and (percent <= 100) for percent in self.wb_fuzzing]))
+        assert(all([(percent >= 0) and (percent <= 100) for percent in self.thresholds]))
+        self.thresholds = (
+            (100-thresholds[0]) if (thresholds[0] > 0) else None, # white-threshold tests greater-than, so it's inverted 
+                (thresholds[1]) if (thresholds[1] > 0) else None)
       return
+    
+    def values(self):
+        return (
+            self.whiteBlack,
+            self.wb_fuzzing,
+            self.thresholds,
+            self.edge_color,
+            self.edgeRadius,
+        );
 
 
 class ImageSourceT():
@@ -24,18 +39,19 @@ class ImageSourceT():
         self.source_frames:list[pathlib.Path] = []
         self.magic = f"$${safe_filename}$$"
         self.image_format = "PNG"
-        self.is_animated = False
-        self.frame_count = 200 # full RGB cycle
-        self.digit_count = 3 # digits in frame_count
+        self.multisource = False
+        self.frame_count = 0
+        self.indexlength = 3 # digits in frame_count
         return
     
     def GetNames(self):
-        contents = (self.source_frames if self.is_animated else [self.srcpath])
+        contents = (self.source_frames if self.multisource else [self.srcpath])
         return [F.name.removesuffix(''.join(F.suffixes)) for F in contents]
     
-    def QuoteSource(self):
-        contents = (self.source_frames if self.is_animated else [self.srcpath])
+    def QuoteSource(self, length:int=1):
+        contents = (self.source_frames if self.multisource else [self.srcpath for _ in range(length)])
         return [f"'{self.image_format}:{F}'" for F in contents]
+    
 
 
 class TaskT():
@@ -65,9 +81,14 @@ class TaskT():
     (
       self.whiteBlack,
       self.wb_fuzzing,
+      self.thresholds,
       self.edge_color,
       self.edgeRadius,
-    ) = color_options.__dict__.values()
+    ) = color_options.values()
+    
+    self.stepsize_deltas = {} # edge, white, black
+    self.delay = 5 # controlling GIF framerate (see RGB.argstr_GIF)
+    # default value for both magick-libraries is (equivalent to) 10
     
     self.frame_formats = [ primary_format, ]
     if (('APNG' in output_fileformats) or ('MP4' in output_fileformats)): self.frame_formats.append('PNG');
@@ -85,6 +106,8 @@ class TaskT():
     assert(output_filename.endswith('_RGB'))
     assert(output_directory.exists() and output_directory.is_dir())
     return
+  
+  def GetRemapWB(self): return zip(self.whiteBlack, self.wb_fuzzing, self.thresholds, ('white','black'));
 
 
 def ParseCrop(cropstr:str|None, gravity:str="center") -> str:
@@ -217,7 +240,6 @@ def ImagePreprocess(task:TaskT, intermediate_format=None):
     scales = ParseScales(task.rescales)
     
     current_img = task.image_source
-    frame_names = current_img.GetNames()
     newest_sink = current_img
     
     magic_map = {
@@ -230,19 +252,30 @@ def ImagePreprocess(task:TaskT, intermediate_format=None):
     # mapping sink-magic to command-list
     expanded_commands = {}
     
+    # maps source-magic to sink-magic
+    transform_hooks : dict[str,str] = {}
+    # alternative to 'transform_queue', when commands don't need resolving
+    # commands may be manually added to the 'expanded_commands' dictionary (under their sink)
+    # after resolving commands for a source in the transform queue, these hooks will be checked to find associated sink
+    # then lookup the sink's pre-generated commands in expanded_commands, and add them to preprocessing_cmds
+    
     if intermediate_format is None: intermediate_format = task.primary_format;
-    def CreateSink(new_name:str, new_fmt:str=intermediate_format, source_img=None):
-        if source_img is None: source_img = current_img;
-        output_path = task.working_path / (new_name if source_img.is_animated else f"{new_name}.{new_fmt.lower()}")
+    def CreateSink(new_name:str, new_fmt:str=intermediate_format, force_multisource=False, sources:list[ImageSourceT]=None):
+        if sources is None: sources = [current_img];
+        is_multisource = (force_multisource or any([source_img.multisource for source_img in sources]))
+        output_path = task.working_path / (new_name if is_multisource else f"{new_name}.{new_fmt.lower()}")
         sink = ImageSourceT(output_path, new_name)
-        sink.is_animated = source_img.is_animated
-        sink.frame_count = source_img.frame_count
-        sink.digit_count = source_img.digit_count
+        sink.multisource = is_multisource
+        sink.frame_count = max([source_img.frame_count for source_img in sources])
+        sink.indexlength = max([source_img.indexlength for source_img in sources])
         sink.image_format = new_fmt
         
-        if sink.is_animated:
+        if sink.multisource:
             output_path.mkdir(exist_ok=True)
-            sink.source_frames = [output_path/f"{name}.{new_fmt.lower()}" for name in frame_names]
+            sink.source_frames = [
+                output_path / f"frame{str(C).zfill(sink.indexlength)}.{new_fmt.lower()}"
+                for C in range(sink.frame_count)
+            ]
         
         nonlocal newest_sink; newest_sink = sink
         magic_map[sink.magic] = sink
@@ -251,26 +284,60 @@ def ImagePreprocess(task:TaskT, intermediate_format=None):
     def QueueTransform(command:str, sources:list[ImageSourceT]=None, sink:ImageSourceT=None):
         if sources is None: sources = [current_img];
         if sink is None: sink = newest_sink;
-        transform_queue.append((sink.magic, command, [S.magic for S in sources]))
+        transform_queue.append((sink.magic,
+            command.replace('  ','').strip(),
+            [S.magic for S in sources]))
         return
     
-    baseimg = CreateSink("baseimg_primary_format", task.primary_format)
+    def ApplyModulation(key, source:ImageSourceT):
+        assert(key in ('edge','white','black')), f"invalid stepsize-lookup: {key}";
+        if (key not in task.stepsize_deltas): return source;
+        modulations = RGB.EnumRotations(task.stepsize_deltas[key], task.image_source.frame_count)
+        new_filename = f"{source.safe_filename}_modulation"
+        output_path = task.working_path / new_filename
+        output_path.mkdir(exist_ok=True)
+        
+        modsink = ImageSourceT(output_path, new_filename)
+        modsink.multisource = True
+        modsink.image_format = source.image_format
+        modsink.frame_count = len(modulations)
+        modsink.indexlength = len(modulations[0][0]) # index string
+        modsink.source_frames = [output_path/f"frame{M[0]}.{source.image_format.lower()}" for M in modulations]
+        modulate_commands = [
+            f"convert {QS} -modulate 100,100,{M[1]} {QO}"
+            for (QS,QO,M) in zip(
+                source.QuoteSource(modsink.frame_count),
+                modsink.QuoteSource(), modulations, strict=True
+            )
+        ]
+        
+        nonlocal newest_sink; newest_sink = modsink;
+        magic_map[modsink.magic] = modsink
+        expanded_commands[modsink.magic] = modulate_commands
+        transform_hooks[source.magic] = modsink.magic
+        return modsink
+    
+    
+    baseimg = CreateSink("baseimg_primary_format", "MPC")
     QueueTransform(f"convert {current_img.magic} -matte {task.crop}")
     current_img = baseimg
     
     if task.whiteBlack is not None:
-        for (new_color, fuzzpcent, colorname) in zip(task.whiteBlack, task.wb_fuzzing, ('white','black')):
-            if new_color is None: continue;
-            recolor = CreateSink(f"srcimg_recolor_{colorname}")
-            threshold_pcent = ((100-fuzzpcent) if (colorname == 'white') else fuzzpcent) # white-threshold tests greater-than
-            if (task.working_path.name.endswith('IM')): color_selection = f"-{colorname}-threshold '{threshold_pcent}%'" # jank test for MAGICKLIBRARY because I don't want to import Globals
-            else: color_selection = f"-operator All Threshold-{colorname.title()} '{threshold_pcent}%'" # this is how '-threshold-black/white' is done in GM ('All' only affects RGB, not alpha)
-            QueueTransform(f"convert {current_img.magic} {color_selection} -fuzz '{fuzzpcent}%' {RGB.RecolorStr(colorname, new_color)}")
-            # QueueTransform(f"convert {current_img.magic} -fuzz {fuzzpcent}% {RGB.RecolorStr(colorname, new_color)}") # TODO: seperate fuzz from threshold percentages 
+        for (new_color, fuzzpcent, thold, colorname) in task.GetRemapWB():
+            if (new_color is None):  continue;
+            if not thold: color_threshold=' ';
+            # checking working_path here is a jank test for MAGICKLIBRARY because I don't want to import Globals
+            elif (task.working_path.name.endswith('IM')): color_threshold = f"-{colorname}-threshold '{thold}%'"
+            else: color_threshold = f"-operator All Threshold-{colorname.title()} '{thold}%'" # this is how '-threshold-black/white' is done in GM ('All' only affects RGB, not alpha)
+            recolor = CreateSink(f"srcimg_recolor_{colorname}"); fuzz = f"-fuzz '{fuzzpcent}%'" if (fuzzpcent>0) else ' ';
+            QueueTransform(f"convert {current_img.magic} {color_threshold} {fuzz} {RGB.RecolorStr(colorname, new_color)}")
             current_img = recolor # 'recolor_white.png' is used as base for 'recolor_black.png'
+            # TODO: stepwhite always breaks recolor_black because of fuzz/thresholds
+            ApplyModulation(colorname,recolor) # updates newest_sink, but not current_img
         
         if (current_img.magic != baseimg.magic):
-            composite = CreateSink("srcimg_WB_recolor")
+            current_img = newest_sink # recolor_black_modulation
+            composite = CreateSink("srcimg_WB_recolor", sources=[current_img, baseimg]) # TODO: misses white-modulation if both alt-stepsizes are enabled
             composite_cmd = f"composite {current_img.magic} {baseimg.magic} -compose Atop"
             QueueTransform(composite_cmd, sources=[current_img, baseimg])
             current_img = composite # keep as base for edge-highlight
@@ -279,14 +346,15 @@ def ImagePreprocess(task:TaskT, intermediate_format=None):
         # (the same behavior occurs when hex codes are used instead of name; #000000 / #000000FF / #00000000)
     
     if task.edge_color is not None:
-        edge_image = CreateSink("srcimg_edge")
+        edge_image = CreateSink("srcimg_edge", sources=[baseimg])
         recolor_cmd = RGB.EdgeHighlightCMD(task.edge_color, task.edgeRadius)
         QueueTransform(recolor_cmd.format(baseimg.magic), sources=[baseimg]) # edge-detect baseimg, NOT current
+        edge_image = ApplyModulation('edge', edge_image)
         baseimg = current_img; current_img = edge_image
         # ^ preserving 'recolor_black.png' in baseimg for final composite
     
     if (current_img.magic != baseimg.magic): # final composite and updating task.image_preprocessed
-        final_output = CreateSink("srcimg_preprocessed")
+        final_output = CreateSink("srcimg_preprocessed",sources=[current_img,baseimg])
         compositecmd = f"composite {current_img.magic} {baseimg.magic} -compose Atop"
         QueueTransform(compositecmd, sources=[current_img, baseimg])
         current_img = final_output
@@ -302,18 +370,22 @@ def ImagePreprocess(task:TaskT, intermediate_format=None):
         sink = magic_map[sink_magic]
         
         resolved_sources = [*zip(*[
-            magic_map[magic_str].QuoteSource()
+            magic_map[magic_str].QuoteSource((sink.frame_count if sink.multisource else 1))
             for magic_str in source_magics
         ])]
         
-        for (output_path, input_path_tuple) in zip(sink.QuoteSource(), resolved_sources):
+        for (output_path, input_path_tuple) in zip(sink.QuoteSource(), resolved_sources, strict=True):
             new_command = command # python is dumb - reassigning 'command' doesn't work and 'nonlocal' isn't allowed
-            for (input_magic, input_path) in zip(source_magics, input_path_tuple):
+            for (input_magic, input_path) in zip(source_magics, input_path_tuple, strict=True):
                 new_command = new_command.replace(input_magic, input_path, 1)
             command_list.append(f"{new_command} {output_path}")
         
         expanded_commands[sink_magic] = command_list
         task.preprocessing_cmds.extend(command_list)
+        if sink_magic in transform_hooks:
+            task.preprocessing_cmds.extend(
+                expanded_commands[transform_hooks[sink_magic]]
+            )
     
     # creating ./miff_frames_scale50/, ./png_frames/... etc
     for frame_source in task.image_preprocessed:
@@ -322,7 +394,7 @@ def ImagePreprocess(task:TaskT, intermediate_format=None):
         for frameformat in task.frame_formats:
             print(f"CURRENT_SOURCE: {current_source.safe_filename} | FRAME_FORMAT: {frameformat}")
             framedir_name = frame_source.safe_filename.replace('srcimg', f'{frameformat.lower()}_frames')
-            framedir_dest = CreateSink(framedir_name, frameformat, current_source)
+            framedir_dest = CreateSink(framedir_name, frameformat, True, sources=[current_source])
             task.frame_directories[framedir_name] = (current_source, framedir_dest)
             if(frameformat == task.primary_format): current_source = framedir_dest;
             # frame_source is updated so that non-primary frame-formats (PNG) can just copy from the primary one
@@ -331,35 +403,13 @@ def ImagePreprocess(task:TaskT, intermediate_format=None):
     return expanded_commands # still None unless edge/WB-recoloring was performed
 
 
-# expects parsed scale-strings (Task.ParseScales)
-def SetupFramesDirectories(task:TaskT, scales:list[tuple[int,str]]):
-    workdir = task.working_path
-    assert(workdir.exists() and workdir.is_dir())
-    
-    directories = []
-    for frameformat in task.frame_formats:
-        for (scale,scalesuffix) in scales:
-            srcimg = workdir/f"srcimg{scalesuffix}.{task.primary_format.lower()}"
-            frames_directory = workdir/f"{frameformat.lower()}_frames{scalesuffix}"
-            if frames_directory.exists(): assert(frames_directory.is_dir());
-            else: frames_directory.mkdir();
-            directories.append({
-                "srcimg": srcimg,
-                "scale": (scale, scalesuffix),
-                "frameformat": frameformat.upper(),
-                "source_format": task.primary_format,
-                "frames_directory": frames_directory,
-            })
-    return directories
-
-
 def GenerateFrames(task:TaskT, enumRotations:list[tuple[str,str]]) -> tuple[list[str],list[str],list[str],list[str],list[str]]:
     assert((srcpath := task.image_source.srcpath).exists() and (srcpath.parent == task.working_path))
     assert(task.working_path.exists() and task.working_path.is_dir())
     assert(len(task.frame_formats) > 0)
     
     if (task.ffprobe_info is None):
-        index_len = task.image_source.digit_count # number of digits to use in printf sequence
+        index_len = task.image_source.indexlength # number of digits to use in printf sequence
         framerate = 30
         audio_src = None
     else:
@@ -367,82 +417,40 @@ def GenerateFrames(task:TaskT, enumRotations:list[tuple[str,str]]) -> tuple[list
         framerate = task.ffprobe_info['framerate']
         audio_src = task.ffprobe_info["extracted_audio_path"]
     
-    scales = ParseScales(task.rescales)
-    directories = SetupFramesDirectories(task, scales)
     
     preprocess_commands = []
     if (not task.did_preprocess_img): # don't duplicate preprocessing
         expanded_commands = ImagePreprocess(task) # TODO: need to update global SRCIMG?
         preprocess_commands = task.preprocessing_cmds
     
-    if (task.ffprobe_info): # video-source
-        framegen_commands = []
-        frame_conversions = [] # commands filling derivative directories (png_frames)
-        for (dest_name, (frame_source, frame_output)) in task.frame_directories.items():
-            if (len(frame_source.source_frames) <= 1): # TODO: are these branches even reachable?
-                frame_source.source_frames = [frame_source.srcpath for _ in range(len(enumRotations))] # repeating single-image to match length of enumRotations (for zip later)
-            if (len(frame_output.source_frames) <= 1):
-                frame_output.source_frames = [(frame_output.srcpath/f"frame{index}.{frame_output.image_format.lower()}") for (index,_) in enumRotations]
-            
-            # generating frames (performing modulation) in primary-format (MPC/MIFF)
-            if ((dest_fmt := frame_output.image_format) == task.primary_format):
-                (src_frames, dest_frames) = (frame_source.QuoteSource(), frame_output.QuoteSource())
-                framegen_commands.extend([
-                    f"convert {src_frame} -scene {index} -modulate 100,100,{rotation} {dest_frame}"
-                    for (src_frame, dest_frame, (index, rotation)) in zip(src_frames, dest_frames, enumRotations)
-                ])
-                continue
-            
-            # derivative frame directory (png_frames); just converting miff_frames to PNG (avoiding duplicate modulation)
-            from_glob = f"'{task.primary_format}:{frame_source.srcpath}/frame*.{task.primary_format.lower()}'"
-            dest_glob = f"'{dest_fmt}:{frame_output.srcpath}/frame%0{index_len}d.{dest_fmt.lower()}'"
-            frame_conversions.append(f"convert {from_glob} +adjoin {dest_glob}")
-            
-            # additional 'apng_frames' created with matte (alpha) disabled
-            if ('APNG' in task.output_fileformats) and (dest_fmt == 'PNG'):
-                framedir = frame_output.srcpath
-                mirror = framedir.with_name(f"a{framedir.name}"); # apng_frames
-                mirror.mkdir(exist_ok=True) # not created yet if input is video
-                dest_glob = f"'{dest_fmt}:{mirror}/frame%0{index_len}d.{dest_fmt.lower()}'"
-                frame_conversions.append(f"convert {from_glob} +matte +adjoin {dest_glob}")
+    framegen_commands = []
+    frame_conversions = [] # commands filling derivative directories (png_frames)
+    ZL = task.image_source.frame_count
+    for (dest_name, (frame_source, frame_output)) in task.frame_directories.items():
+        # generating frames (performing modulation) in primary-format (MPC/MIFF)
+        if ((dest_fmt := frame_output.image_format) == task.primary_format):
+            (src_frames, dest_frames) = (frame_source.QuoteSource(ZL), frame_output.QuoteSource(ZL))
+            framegen_commands.extend([
+                f"convert {src_frame} -scene {index} -modulate 100,100,{rotation} {dest_frame}"
+                for (src_frame, dest_frame, (index, rotation)) in zip(src_frames, dest_frames, enumRotations, strict=True)
+            ])
+            continue
         
-        framegen_commands.extend(frame_conversions)
+        # derivative frame directory (png_frames); just converting miff_frames to PNG (avoiding duplicate modulation)
+        from_glob = f"'{task.primary_format}:{frame_source.srcpath}/frame*.{task.primary_format.lower()}'"
+        dest_glob = f"'{dest_fmt}:{frame_output.srcpath}/frame%0{index_len}d.{dest_fmt.lower()}'"
+        frame_conversions.append(f"convert {from_glob} +adjoin {dest_glob}")
         
-    else: # nonvideo-source
-        # PNG frames should just be directly converted from the primary format (MPC/MIFF)
-        # only generate frames for primary format; frames in other formats will be converted from these
-        source_frame_dirs = [ DIR for DIR in directories if (DIR['frameformat'] == task.primary_format) ]
-        
-        framelists = [[(
-              (index,rotation), (DIR['frames_directory']/f"frame{index}.{DIR['frameformat'].lower()}")
-            ) for (index,rotation) in enumRotations
-        ] for DIR in source_frame_dirs ]
-        
-        framegen_commands = [
-            f"convert '{DIR['source_format']}:{DIR['srcimg']}' -scene {index} -modulate 100,100,{rotation} '{DIR['frameformat']}:{frame}'"
-            for (DIR, framelist) in zip(source_frame_dirs, framelists)
-            for ((index, rotation), frame) in framelist
-        ]
-        
-        # PNG-frames are converted from the primary (MPC/MIFF) frames instead of generating them all seperately
-        derivative_mapping = [
-            (SRC, DER)
-            for DER in directories
-            for SRC in source_frame_dirs
-            if ((DER['frameformat'] != task.primary_format) and 
-                (DER['scale'] == SRC['scale']))
-        ]
-        
-        for (SRC, DER) in derivative_mapping:
-            from_glob = f"'{task.primary_format}:{SRC['frames_directory']}/frame*.{task.primary_format.lower()}'"
-            dest_glob = f"'{DER['frameformat']}:{DER['frames_directory']}/frame%0{index_len}d.{DER['frameformat'].lower()}'"
-            framegen_commands.append(f"convert {from_glob} +adjoin {dest_glob}")
-            if ((DER['frameformat'] == 'PNG') and ('APNG' in task.output_fileformats)):
-                mirror = DER['frames_directory'].with_name(f'a{DER['frames_directory'].name}'); mirror.mkdir(exist_ok=True) # apng_frames
-                dest_glob = f"'{DER['frameformat']}:{mirror}/frame%0{index_len}d.{DER['frameformat'].lower()}'"
-                framegen_commands.append(f"convert {from_glob} +matte +adjoin {dest_glob}")
-            # '+matte' removes alpha channel; ensuring black background for APNG (transparency renders as white in browsers)
-            # APNG supports transparency, but ffmpeg apparently does not, and neither it nor any browsers respect background/alpha color 
+        # additional 'apng_frames' created with matte (alpha) disabled
+        if ('APNG' in task.output_fileformats) and (dest_fmt == 'PNG'):
+            framedir = frame_output.srcpath
+            mirror = framedir.with_name(f"a{framedir.name}"); # apng_frames
+            mirror.mkdir(exist_ok=True) # not created yet if input is video
+            dest_glob = f"'{dest_fmt}:{mirror}/frame%0{index_len}d.{dest_fmt.lower()}'"
+            frame_conversions.append(f"convert {from_glob} +matte +adjoin {dest_glob}")
+    
+    framegen_commands.extend(frame_conversions)
+    
     
     render_commands = []
     webp_rendercmds = []
@@ -467,7 +475,10 @@ def GenerateFrames(task:TaskT, enumRotations:list[tuple[str,str]]) -> tuple[list
         
         # webp output is ImageMagick-only; no animation in GraphicsMagick
         (magick_convert, opts) = (("convert-im6.q16", webp_options) if (isWEBP := (outfmt == "WEBP")) else 
-                                  ("convert", (RGB.argstr_GIF(len(enumRotations)) if(outfmt == "GIF") else "")))
+                                  ("convert", RGB.argstr_GIF(task.delay) if (outfmt=="GIF") else ""))
+        if (outfmt == "GIF"):
+            if (opts[0] is None): opts = opts[1];
+            else: render_commands.append(f"{magick_convert} {opts[0]} '{srcfmt}:{framedir}/frame*.{srcfmt.lower()}' {opts[1]} -adjoin '{outfmt}:{work_file}'"); continue;
         cmd = f"{magick_convert} '{srcfmt}:{framedir}/frame*.{srcfmt.lower()}' {opts} -adjoin '{outfmt}:{work_file}'"
         if isWEBP: webp_rendercmds.append(cmd);
         else: render_commands.append(cmd);

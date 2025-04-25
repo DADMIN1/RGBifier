@@ -41,6 +41,13 @@ def DecimalCount(F:float, parts:int=1) -> int | tuple[int,int] | tuple[int,int,i
     return lengths[parts]
 
 
+def EstimateSteps(stepsize:float):
+    framecount = int(200//stepsize)
+    index_length = 1+int(log10(framecount-1)) # length of digit-strings in numbered filenames
+    # this calculation: ^ assumes incremental numbering starting at ZERO! (indexing from 1 would not subtract)
+    return (framecount, index_length)
+
+
 def HueRotations(stepsize:float) -> list[str]:
     """ produces rotations for a given stepsize
     :param stepsize: hue-rotation per frame.
@@ -70,7 +77,7 @@ def EnumRotations(stepsize:float, length:int = 0) -> list[tuple[str,str]]:
         extended_rotations = rotation_strs.copy()
         while(len(extended_rotations) < length): extended_rotations.extend(rotation_strs);
         rotation_strs = extended_rotations[:length]; assert(len(rotation_strs) == length);
-    padding = 1 + int(log10(len(rotation_strs)))
+    padding = 1 + int(log10(len(rotation_strs) - 1))
     enumRotations = [
         (str(index).zfill(padding), rotation)
         for (index, rotation) in enumerate(rotation_strs)
@@ -232,16 +239,24 @@ def EdgeHighlightCMD(edge_color:int|str, edge_radius) -> str:
     return "convert {0} -contrast -contrast " + recolor_mid  # doesn't contain output; needs to be appended manually
 
 
-def argstr_GIF(numRotations:int|None = None):
+def argstr_GIF(delay:int) -> tuple[str,str]:
+    """:returns: arg-string before and after input"""
     # frames generated for GIF output need preprocessing to reduced (255) color-palette
     # 'fuzz' and 'treedepth' options have no effect (IM and GM), regardless of value and remap/morph options. (output has identical checksum)
     remap_arg = ("+remap" if (Globals.MAGICKLIBRARY == "IM") else ' ') # IM-only; GM does not recognize 'remap'
     use_morph = False; morph_arg = ("-morph 10" if use_morph else ' ')
-    #use_delay = (Globals.MAGICKLIBRARY == "IM") and (numRotations is not None) and (numRotations > 0) # TODO: for some reason, specifying '-delay' with GraphicsMagick INCREASES speed??!
-    use_delay = False
-    delay_arg = (f"-delay {max(int(4*(200/numRotations)), 1)}" if use_delay else ' ')
+    
+    # delay must be specified BEFORE INPUT when using ImageMagick
+    isIM = (Globals.MAGICKLIBRARY == "IM")
+    # '-delay 0' seems equivalent to not specifying delay, although the checksums are different
+    use_delay = ((delay > 0) and (delay != 10)) # the default speed is equivalent to '-delay 10'
+    delay_arg = (f"-delay {delay}" if use_delay else ' ')
+    
     disposing = "-dispose None" # {None | Undefined | Background | Previous} (default: 'Undefined')
     useDither = False; dithering = ' ' if useDither else "+dither" # '+dither' disables dithering
-    GIFargstr = f"{dithering} {morph_arg} {remap_arg} {disposing} {delay_arg}".replace('  ','').strip()
     # dithering prevents color-banding but causes visual static, increases filesize by 50%, and cripples '+remap' operation
-    return GIFargstr
+    
+    maybe_arg = ' '.join((disposing, delay_arg)) if (not isIM) else ' '
+    argstrOne = f"{disposing} {delay_arg}".replace('  ','').strip() if isIM else None
+    argstrTwo = f"{dithering} {morph_arg} {maybe_arg} {remap_arg}".replace('  ','').strip()
+    return (argstrOne, argstrTwo)
