@@ -41,7 +41,7 @@ class ImageSourceT():
         self.image_format = "PNG"
         self.multisource = False
         self.frame_count = 0
-        self.indexlength = 3 # digits in frame_count
+        self.indexlength = 0 # digits in frame_count
         return
     
     def GetNames(self):
@@ -389,7 +389,7 @@ def ImagePreprocess(task:TaskT, intermediate_format=None):
     
     # creating ./miff_frames_scale50/, ./png_frames/... etc
     for frame_source in task.image_preprocessed:
-        print(f"FRAME SOURCE: {frame_source.safe_filename}")
+        print(f"\nFRAME SOURCE: {frame_source.safe_filename}")
         current_source = frame_source
         for frameformat in task.frame_formats:
             print(f"CURRENT_SOURCE: {current_source.safe_filename} | FRAME_FORMAT: {frameformat}")

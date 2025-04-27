@@ -362,7 +362,9 @@ def MakeImageSources(workdir:pathlib.Path, input_file:pathlib.Path, max_frames:i
             "duration": duration,
         }
         
-        # TODO: looks like sometimes the 'color_space' lookup fails (try re-feeding an output video)
+        # sometimes it doesn't create an entry for 'color_space' and lookups fail
+        if ('color_space' not in video_stream.keys()): video_stream['color_space'] = 'unknown';
+        
         print(f"[VIDEO INFO] {safe_filename}.{og_suffix} [{video_stream['codec_name']}]")
         (aspect_ratio, bpp) = (video_stream['display_aspect_ratio'], str(video_stream['bits_per_raw_sample']))
         print(info_string := "{} ({}) @{}fps - {:.3f}s".format(WxH, aspect_ratio, framerate, float(duration)))
@@ -397,7 +399,7 @@ def MakeImageSources(workdir:pathlib.Path, input_file:pathlib.Path, max_frames:i
         assert(len(framelist) == framecount), "unexpected number of extracted frames!";
         source.frame_count = FC = (framecount if (max_frames is None) else max_frames);
         source.source_frames = framelist[:FC]
-        source.index_length = index_length
+        source.indexlength = index_length
         task_info['frames_max'] = FC
     else:
         os.system(f"cp --verbose '{baseimg_path}' '{src_path}'")
@@ -580,22 +582,26 @@ def Main(identify_srcimg=False):
         args.output_formats,
     )
     
-    stepsize_deltas = CalcStepDeltas(args)
-    task.stepsize_deltas = stepsize_deltas
-    PrintDict(stepsize_deltas,"stepsizes")
-    print('\n')
-    
-    # not necessary, but it's nice to seperate each preprocessing step
-    if (Globals.MAGICKLIBRARY == "GM"):
-        expanded_commands = Task.ImagePreprocess(task)
-        preprocess_batch_commands = SavePreprocessingCommands(workdir, expanded_commands)
-        SubCommand(preprocess_batch_commands, "manual_preprocessing", isCmdSequence=True)
-    
     expected_outputs = Task.FillExpectedOutputs(task)
     print('\n'); assert(len(expected_outputs) > 0), "no expected outputs"
     
+    enumrotations = RGB.EnumRotations(args.stepsize, frames_max)
+    if (args.stepwhite or args.stepblack or args.stepedge):
+        stepsize_deltas = CalcStepDeltas(args)
+        task.stepsize_deltas = stepsize_deltas
+        PrintDict(stepsize_deltas, "altsteps")
+        print('\n')
+    
+    # not necessary, but it's nice to seperate each preprocessing step
+    if (Globals.MAGICKLIBRARY == "GM"):
+        print("INITIAL PREPROCESSING")
+        expanded_commands = Task.ImagePreprocess(task)
+        preprocess_batch_commands = SavePreprocessingCommands(workdir, expanded_commands); Globals.Break("PRINT_ONLY")
+        SubCommand(preprocess_batch_commands, "manual_preprocessing", isCmdSequence=True); print(f"{'_'*120}\n")
+    
+    print("PREPARING FRAME GENERATION")
     # command_names = ("preprocessing", "frame_generation", "rendering")
-    commands = Task.GenerateFrames(task, RGB.EnumRotations(args.stepsize, frames_max))
+    commands = Task.GenerateFrames(task, enumrotations)
     (webp_rendercmds, ffmpeg_commands) = commands[-2:]; commands = commands[:3]
     
     cmd_names = ("preprocessing", "frame_generation", "rendering", "rendering_webp", "rendering_ffmpeg")
@@ -616,6 +622,7 @@ def Main(identify_srcimg=False):
     for (cmds_name, commands) in batch_zip: SubCommand(commands, cmds_name, isCmdSequence=use_IM)
     if  (len(webp_rendercmds) > 0): SubCommand(webp_rendercmds, cmd_names[3], isCmdSequence=True)
     if  (len(ffmpeg_commands) > 0): SubCommand(ffmpeg_commands, cmd_names[4], isCmdSequence=True)
+    print(f"{'_'*120}\n")
     
     if args.nowrite: print('skipping final writes!!'); return;
     print(f"moving outputs to final destinations...")

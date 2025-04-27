@@ -42,7 +42,7 @@ def DecimalCount(F:float, parts:int=1) -> int | tuple[int,int] | tuple[int,int,i
 
 
 def EstimateSteps(stepsize:float):
-    framecount = int(200//stepsize)
+    framecount = int(200/stepsize) # note: 200/0.1 == 2000; but 200//0.1 == 1999 (WTF python)
     index_length = 1+int(log10(framecount-1)) # length of digit-strings in numbered filenames
     # this calculation: ^ assumes incremental numbering starting at ZERO! (indexing from 1 would not subtract)
     return (framecount, index_length)
