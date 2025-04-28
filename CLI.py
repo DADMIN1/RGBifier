@@ -278,7 +278,7 @@ def ParseCmdline(arglist:list[str]|None = None, *, debug_mode=False, ignore_inpu
     
     if parsed_args.nowrite:
         print("\nrelocation of outputs is disabled (--nowrite)")
-        if parsed_args.autodelete: print("autodelete disabled; outputs would not be observable with '--nowrite'");
+        if parsed_args.autodelete: print("[WARNING] --nowrite given with autodelete active; output will not be observable (try --noclean)");
         if (parsed_args.output_dir is not None): print(f"[WARNING] output-directory will be ignored (--nowrite): {parsed_args.output_dir}");
         if any([parsed_args.relative_img, parsed_args.relative_cwd, parsed_args.relative_tmp]): print("warning: '--relative' arg will be ignored (--nowrite)")
         print('')
@@ -448,10 +448,6 @@ def ResolveOutputPath(parsed_args:argparse.Namespace, toplevel:pathlib.Path):
 
 def CalcDeltas(parsed_args:argparse.Namespace):
     stepsize = parsed_args.stepsize
-    # because recolor_white is used as base for 'recolor_black'
-    # if (parsed_args.stepwhite and parsed_args.stepblack):
-    #     parsed_args.stepwhite = parsed_args.stepwhite - parsed_args.stepblack
-    
     # noinspection PyUnboundLocalVariable
     # ^ ignore BS warning about reference before assignment on 'delta'
     stepsize_delta = {
@@ -464,11 +460,6 @@ def CalcDeltas(parsed_args:argparse.Namespace):
         ) if (altstep is not None)
         and ((delta:=(altstep-stepsize)) != 0)
     }
-    # because recolor_white is used as base for 'recolor_black'
-    # this still isn't right because it applies the delta twice
-    # if (parsed_args.stepwhite and parsed_args.stepblack):
-    #     stepsize_delta['white'] = stepsize_delta['white'] - stepsize_delta['black']
-    
     return stepsize_delta
 
 

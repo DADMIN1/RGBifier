@@ -259,8 +259,11 @@ def ImagePreprocess(task:TaskT, intermediate_format=None):
     # after resolving commands for a source in the transform queue, these hooks will be checked to find associated sink
     # then lookup the sink's pre-generated commands in expanded_commands, and add them to preprocessing_cmds
     
+    sink_count : dict[str,int] = {} # counts how many times an object is used as a sink (written to)
+    parent_map : dict[str,str] = {} # associates one sink with another - expanded commands will also be added to parent
+    
     if intermediate_format is None: intermediate_format = task.primary_format;
-    def CreateSink(new_name:str, new_fmt:str=intermediate_format, force_multisource=False, sources:list[ImageSourceT]=None):
+    def CreateSink(new_name:str, new_fmt:str=intermediate_format, force_multisource=False, sources:list[ImageSourceT]=None, parent:ImageSourceT=None):
         if sources is None: sources = [current_img];
         is_multisource = (force_multisource or any([source_img.multisource for source_img in sources]))
         output_path = task.working_path / (new_name if is_multisource else f"{new_name}.{new_fmt.lower()}")
@@ -278,12 +281,14 @@ def ImagePreprocess(task:TaskT, intermediate_format=None):
             ]
         
         nonlocal newest_sink; newest_sink = sink
+        if (parent is not None): parent_map[sink.magic] = parent.magic;
         magic_map[sink.magic] = sink
         return sink
     
     def QueueTransform(command:str, sources:list[ImageSourceT]=None, sink:ImageSourceT=None):
         if sources is None: sources = [current_img];
         if sink is None: sink = newest_sink;
+        sink_count[sink.magic] = 1 + sink_count.get(sink.magic, 0)
         transform_queue.append((sink.magic,
             command.replace('  ','').strip(),
             [S.magic for S in sources]))
@@ -329,21 +334,28 @@ def ImagePreprocess(task:TaskT, intermediate_format=None):
             # checking working_path here is a jank test for MAGICKLIBRARY because I don't want to import Globals
             elif (task.working_path.name.endswith('IM')): color_threshold = f"-{colorname}-threshold '{thold}%'"
             else: color_threshold = f"-operator All Threshold-{colorname.title()} '{thold}%'" # this is how '-threshold-black/white' is done in GM ('All' only affects RGB, not alpha)
-            recolor = CreateSink(f"srcimg_recolor_{colorname}"); fuzz = f"-fuzz '{fuzzpcent}%'" if (fuzzpcent>0) else ' ';
-            QueueTransform(f"convert {current_img.magic} {color_threshold} {fuzz} {RGB.RecolorStr(colorname, new_color)}")
-            current_img = recolor # 'recolor_white.png' is used as base for 'recolor_black.png'
-            # TODO: stepwhite always breaks recolor_black because of fuzz/thresholds
-            ApplyModulation(colorname,recolor) # updates newest_sink, but not current_img
-        
-        if (current_img.magic != baseimg.magic):
-            current_img = newest_sink # recolor_black_modulation
-            composite = CreateSink("srcimg_WB_recolor", sources=[current_img, baseimg]) # TODO: misses white-modulation if both alt-stepsizes are enabled
-            composite_cmd = f"composite {current_img.magic} {baseimg.magic} -compose Atop"
-            QueueTransform(composite_cmd, sources=[current_img, baseimg])
+            recolor = CreateSink(f"srcimg_recolor_{colorname}", sources=[baseimg]); fuzz = f"-fuzz '{fuzzpcent}%'" if (fuzzpcent>0) else ' ';
+            QueueTransform(f"convert {baseimg.magic} {color_threshold} {fuzz} {RGB.RecolorStr(colorname, new_color)}", sources=[baseimg])
+            
+            if (colorname == 'black'):
+                # black needs to discard transparent areas, because the black-recolor (fill/opaque) always fills them
+                # for some reason, replacing 'Black' will also fill all transparent regions - replacing white doesn't
+                # (the same behavior occurs when hex codes are used instead of name; #000000 / #000000FF / #00000000)
+                opacity_mask = CreateSink('opacity_mask', sources=[baseimg], parent=recolor)
+                QueueTransform(f"convert {baseimg.magic} -operator Opacity Xor 100%", sources=[baseimg], sink=opacity_mask)
+                QueueTransform(f"composite {recolor.magic} {opacity_mask.magic} -compose Out", sources=[recolor, opacity_mask], sink=recolor)
+            
+            recolor_diff = CreateSink(f'recolor_{colorname}_diff', sources=[baseimg, recolor], parent=recolor)
+            recolor_mask = CreateSink(f'recolor_{colorname}_mask', sources=[recolor_diff], parent=recolor)
+            QueueTransform(f"composite {baseimg.magic} {recolor.magic} -compose Difference", sources=[baseimg, recolor], sink=recolor_diff)
+            QueueTransform(f"convert {recolor_diff.magic} -fill transparent -opaque black", sources=[recolor_diff], sink=recolor_mask)
+            QueueTransform(f"composite {recolor.magic} {recolor_mask.magic} -compose In", sources=[recolor, recolor_mask], sink=recolor)
+            
+            recolor = ApplyModulation(colorname, recolor)
+            composite = CreateSink("recolor_composite", sources=[current_img, recolor])
+            composite_cmd = f"composite {recolor.magic} {current_img.magic} -compose Over"
+            QueueTransform(composite_cmd, sources=[recolor, current_img])
             current_img = composite # keep as base for edge-highlight
-        # the last composite only exists to discard the transparency that always gets filled by recolor_black
-        # for some reason, replacing 'Black' will also fill all transparent regions - replacing white doesn't
-        # (the same behavior occurs when hex codes are used instead of name; #000000 / #000000FF / #00000000)
     
     if task.edge_color is not None:
         edge_image = CreateSink("srcimg_edge", sources=[baseimg])
@@ -366,8 +378,9 @@ def ImagePreprocess(task:TaskT, intermediate_format=None):
         task.image_preprocessed.append(scaled_img)
     
     for (sink_magic, command, source_magics) in transform_queue:
-        command_list = []; print(f"resolving command: '{command}' -> {sink_magic}")
-        sink = magic_map[sink_magic]
+        print(f"resolving command: '{command}' -> {sink_magic}")
+        command_list = expanded_commands.get(sink_magic, list())
+        sink = magic_map[sink_magic]; new_command_list = []
         
         resolved_sources = [*zip(*[
             magic_map[magic_str].QuoteSource((sink.frame_count if sink.multisource else 1))
@@ -378,14 +391,19 @@ def ImagePreprocess(task:TaskT, intermediate_format=None):
             new_command = command # python is dumb - reassigning 'command' doesn't work and 'nonlocal' isn't allowed
             for (input_magic, input_path) in zip(source_magics, input_path_tuple, strict=True):
                 new_command = new_command.replace(input_magic, input_path, 1)
-            command_list.append(f"{new_command} {output_path}")
+            new_command_list.append(f"{new_command} {output_path}")
         
+        sink_count[sink.magic] = current_count = sink_count[sink.magic] - 1
+        if (current_count == 0):
+            if sink_magic in transform_hooks:
+                new_command_list.extend(expanded_commands[transform_hooks[sink_magic]])
+        
+        if sink_magic in parent_map:
+            expanded_commands[parent_map[sink_magic]].extend(new_command_list)
+        
+        command_list.extend(new_command_list)
         expanded_commands[sink_magic] = command_list
-        task.preprocessing_cmds.extend(command_list)
-        if sink_magic in transform_hooks:
-            task.preprocessing_cmds.extend(
-                expanded_commands[transform_hooks[sink_magic]]
-            )
+        task.preprocessing_cmds.extend(new_command_list)
     
     # creating ./miff_frames_scale50/, ./png_frames/... etc
     for frame_source in task.image_preprocessed:

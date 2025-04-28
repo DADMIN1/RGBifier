@@ -472,7 +472,7 @@ def SavePreprocessingCommands(workdir:pathlib.Path, expanded_commands:dict):
         "baseimg_primary_format": expanded_commands.get("$$baseimg_primary_format$$", None),
         "recolor_white": expanded_commands.get("$$srcimg_recolor_white$$", None),
         "recolor_black": expanded_commands.get("$$srcimg_recolor_black$$", None),
-        "WB_recolor": expanded_commands.get("$$srcimg_WB_recolor$$", None),
+        "recolor_composite": expanded_commands.get("$$recolor_composite$$",None),
         "edge": expanded_commands.get("$$srcimg_edge$$", None),
         "preprocessed": expanded_commands.get("$$srcimg_preprocessed$$", None),
         "final": expanded_commands.get("$$srcimg$$", None),
