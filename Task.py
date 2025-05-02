@@ -342,13 +342,16 @@ def ImagePreprocess(task:TaskT, intermediate_format=None):
                 # for some reason, replacing 'Black' will also fill all transparent regions - replacing white doesn't
                 # (the same behavior occurs when hex codes are used instead of name; #000000 / #000000FF / #00000000)
                 opacity_mask = CreateSink('opacity_mask', sources=[baseimg], parent=recolor)
-                QueueTransform(f"convert {baseimg.magic} -operator Opacity Xor 100%", sources=[baseimg], sink=opacity_mask)
+                if task.working_path.name.endswith('GM'): QueueTransform(f"convert {baseimg.magic} -operator Opacity Xor '100%'", sources=[baseimg], sink=opacity_mask);
+                else: QueueTransform(f"convert -alpha Extract {baseimg.magic} -fuzz '99%' -transparent white", sources=[baseimg], sink=opacity_mask);
                 QueueTransform(f"composite {recolor.magic} {opacity_mask.magic} -compose Out", sources=[recolor, opacity_mask], sink=recolor)
             
             recolor_diff = CreateSink(f'recolor_{colorname}_diff', sources=[baseimg, recolor], parent=recolor)
             recolor_mask = CreateSink(f'recolor_{colorname}_mask', sources=[recolor_diff], parent=recolor)
             QueueTransform(f"composite {baseimg.magic} {recolor.magic} -compose Difference", sources=[baseimg, recolor], sink=recolor_diff)
-            QueueTransform(f"convert {recolor_diff.magic} -fill transparent -opaque black", sources=[recolor_diff], sink=recolor_mask)
+            if task.working_path.name.endswith('IM'): # for some reason IM struggles to replace black here without a threshold/fuzz of ~10%
+                QueueTransform(f"convert {recolor_diff.magic} -black-threshold '10%' -transparent black", sources=[recolor_diff], sink=recolor_mask);
+            else: QueueTransform(f"convert {recolor_diff.magic} {RGB.RecolorStr('black','transparent')}", sources=[recolor_diff], sink=recolor_mask);
             QueueTransform(f"composite {recolor.magic} {recolor_mask.magic} -compose In", sources=[recolor, recolor_mask], sink=recolor)
             
             recolor = ApplyModulation(colorname, recolor)

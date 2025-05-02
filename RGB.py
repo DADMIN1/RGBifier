@@ -42,11 +42,12 @@ def DecimalCount(F:float, parts:int=1) -> int | tuple[int,int] | tuple[int,int,i
 
 
 def EstimateSteps(stepsize:float):
-    framecount = int(200/stepsize) # note: 200/0.1 == 2000; but 200//0.1 == 1999 (WTF python)
+    framecount = abs(int(200/stepsize)) # 200/0.1 == 2000; but 200//0.1 == 1999 (WTF python?)
     index_length = 1+int(log10(framecount-1)) # length of digit-strings in numbered filenames
     # this calculation: ^ assumes incremental numbering starting at ZERO! (indexing from 1 would not subtract)
+    #if((200 % stepsize) != 0.0): ... <-- fails due to float-imprecision; gives nonzero for perfect divisors
+    if ((framecount*stepsize) != 200): framecount += 1; # off-by-one when stepsize is not a perfect divisor of 200
     return (framecount, index_length)
-
 
 def HueRotations(stepsize:float) -> list[str]:
     """ produces rotations for a given stepsize
@@ -199,7 +200,6 @@ def GenerateCommands(stepsize:float, writeMPC:bool=True, writePNG:bool=False, wr
 
 
 # TODO: generate colormap without 'remap'
-# TODO: handle GIF inputs (divide into frames and interpolate between them)
 # TODO: hwaccel with ffmpeg
 
 
@@ -214,7 +214,7 @@ def HexString(num:int): return "'#{:08X}'".format(num);
 # input hex-strings must be length 8, or the value will be shifted due to padding in HexString
 def RecolorStr(old:str, new:int|str):
     new = (HexString(new) if isinstance(new, int) else HexString(int(new,16)) if new.startswith('0x') else new.title())
-    return f"-fill {new} -opaque {old.title()}"
+    return f"{'-channel rgba' if (Globals.MAGICKLIBRARY == "IM") else ''} -fill {new} -opaque {old.title()}".strip(' ')
 
 def EdgeHighlight(srcimg:pathlib.Path, edge_color:int|str, edge_radius) -> tuple[str, pathlib.Path]:
     """returns recolor-command and output path"""

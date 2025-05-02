@@ -296,8 +296,7 @@ def MakeImageSources(workdir:pathlib.Path, input_file:pathlib.Path, max_frames:i
     # TODO: actually verify the filetype/encoding of baseimg
     if (len(input_file.suffixes) == 0): print("[WARNING] no suffix on input-file - assuming PNG");
     og_suffix = (input_file.suffixes[-1].removeprefix('.') if (len(input_file.suffixes) > 0) else 'PNG').lower()
-    assert(og_suffix in ('png', 'mp4')), f"no implementation for input-format: {og_suffix}"
-    is_animated = (og_suffix == 'mp4') # TODO: figure out how to test gif/webp for animation
+    animatedFormats = ('mp4','gif','mkv','mov','avi') # TODO: figure out how to test gif/webp for animation
     stream_info = None
     
     # baseimg: copy of unmodified original
@@ -312,9 +311,8 @@ def MakeImageSources(workdir:pathlib.Path, input_file:pathlib.Path, max_frames:i
         os.system(f"cp --verbose '{input_file}' '{baseimg_path}'")
     
     print("preprocessing baseimg...")
-    if is_animated:
+    if (og_suffix in animatedFormats):
         source.multisource = True
-        prefix = 'frame'; suffix = '.png'
         
         print(f"\n{'_'*120}\n")
         print("ffprobing for audio/video streams...")
@@ -342,11 +340,11 @@ def MakeImageSources(workdir:pathlib.Path, input_file:pathlib.Path, max_frames:i
         dimensions = [video_stream[D] for D in ('width', 'height')] # integers
         framerates = [video_stream[R] for R in ("r_frame_rate", "avg_frame_rate")] # "60/1"
         if (framerates[0] != framerates[1]): print("[WARNING] r/avg framerates mismatch!");
+        (N,D) = [int(I) for I in framerates[0].split('/',maxsplit=1)]; framerate = int(N/D)
         # note that "duration" might be slightly different between the video/audio streams,
         # due to differences in the ratios used as the 'time_base' between the two streams;
         # "time_base" for a video might be ~'1/15000', audio is likely '1/44100' (44100Hz).
         # formula: duration = "time_base" x "duration_ts"
-        framerate = int(framerates[0].removesuffix("/1"))
         duration = (float(video_stream["duration"]))
         WxH = 'x'.join([str(D) for D in dimensions])
         
@@ -363,7 +361,8 @@ def MakeImageSources(workdir:pathlib.Path, input_file:pathlib.Path, max_frames:i
         }
         
         # sometimes it doesn't create an entry for 'color_space' and lookups fail
-        if ('color_space' not in video_stream.keys()): video_stream['color_space'] = 'unknown';
+        for dkey in ('color_space','display_aspect_ratio','bits_per_raw_sample'):
+            if (dkey not in video_stream.keys()): video_stream[dkey] = 'unknown';
         
         print(f"[VIDEO INFO] {safe_filename}.{og_suffix} [{video_stream['codec_name']}]")
         (aspect_ratio, bpp) = (video_stream['display_aspect_ratio'], str(video_stream['bits_per_raw_sample']))
@@ -385,6 +384,7 @@ def MakeImageSources(workdir:pathlib.Path, input_file:pathlib.Path, max_frames:i
         # TODO: AAC audio should use '.m4a' extension? # https://trac.ffmpeg.org/wiki/Encode/AAC
         # using '.aac' causes ffmpeg to complain when recombining the audio/video - "[aac] Estimating duration from bitrate, this may be inaccurate"
         
+        prefix = 'frame'; suffix = '.png'
         if src_path.exists(): print(f"skipping srcimg frame-extraction (already exists)");
         else:
             print("extracting frames from baseimg...")
