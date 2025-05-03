@@ -19,5 +19,5 @@ configs_RGBifier/*.json
 *.webp
 *.apng
 
-!readme_assets/colorchart.png
-!readme_assets/rgb_scale75.webp
+!readme_assets/*
+
