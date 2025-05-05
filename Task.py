@@ -360,6 +360,8 @@ def ImagePreprocess(task:TaskT, intermediate_format=None):
             QueueTransform(composite_cmd, sources=[recolor, current_img])
             current_img = composite # keep as base for edge-highlight
     
+    #TODO: still not avoiding a redundant composite when edge-detection is disabled
+    
     if task.edge_color is not None:
         edge_image = CreateSink("srcimg_edge", sources=[baseimg])
         recolor_cmd = RGB.EdgeHighlightCMD(task.edge_color, task.edgeRadius)
@@ -377,6 +379,12 @@ def ImagePreprocess(task:TaskT, intermediate_format=None):
     for (scale_value, scale_suffix) in scales:
         scale_text = ('' if (scale_value == 100) else f"-scale '{scale_value}%'")
         scaled_img = CreateSink(f"srcimg{scale_suffix}", task.primary_format)
+        # for unknown reasons, GraphicsMagick deletes original files after any command that is effectively no-op
+        # '-modulate' seems to be one of the few options that forces an 'unoptimized clone'; preventing deletion
+        if ((intermediate_format == 'MPC') and (scale_value == 100) and (task.working_path.name.endswith('GM'))):
+            scale_text = "-modulate 100"; # ImageMagick does not have any issue; only with GraphicsMagick ^ (and only with MPC, no issues using MIFF)
+        # '-scale' also prevents this (obviously), but the fullsize sink can't use it because of another bug: '-scale 100%' writes corrupt image data
+        # another workaround is '-write'-ing to the real destination, using the source as input and output (difficult to implement here)
         QueueTransform(f"convert {current_img.magic} {scale_text}")
         task.image_preprocessed.append(scaled_img)
     
@@ -413,9 +421,10 @@ def ImagePreprocess(task:TaskT, intermediate_format=None):
         print(f"\nFRAME SOURCE: {frame_source.safe_filename}")
         current_source = frame_source
         for frameformat in task.frame_formats:
-            print(f"CURRENT_SOURCE: {current_source.safe_filename} | FRAME_FORMAT: {frameformat}")
+            print(f"CURRENT_SOURCE: {current_source.safe_filename} | FRAME_FORMAT: {frameformat}",end='')
             framedir_name = frame_source.safe_filename.replace('srcimg', f'{frameformat.lower()}_frames')
             framedir_dest = CreateSink(framedir_name, frameformat, True, sources=[current_source])
+            print(f" | SINK_NAME: {framedir_name}")
             task.frame_directories[framedir_name] = (current_source, framedir_dest)
             if(frameformat == task.primary_format): current_source = framedir_dest;
             # frame_source is updated so that non-primary frame-formats (PNG) can just copy from the primary one
