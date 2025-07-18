@@ -216,28 +216,15 @@ def RecolorStr(old:str, new:int|str):
     new = (HexString(new) if isinstance(new, int) else HexString(int(new,16)) if new.startswith('0x') else new.title())
     return f"{'-channel rgba' if (Globals.MAGICKLIBRARY == "IM") else ''} -fill {new} -opaque {old.title()}".strip(' ')
 
-def EdgeHighlight(srcimg:pathlib.Path, edge_color:int|str, edge_radius) -> tuple[str, pathlib.Path]:
-    """returns recolor-command and output path"""
-    recolor_str = f"{RecolorStr('Black', 'Transparent')} {RecolorStr('White', edge_color)}"
-    if (Globals.MAGICKLIBRARY == "IM"): # for some reason IM needs rgba specified, and fuzz cannot be 100%
-        recolor_mid = f"-threshold 25% -channel rgba -modulate 100,0 -edge {edge_radius} -fuzz 99% {recolor_str}"
-        # also, '-threshold' is required, otherwise the edge-detection goes insane and traces just about every pixel. Order matters; the outcome is slightly different if you move 'threshold' later.
-    else: # saturation 0% and fuzz 100% to isolate all the non-white pixels
-        recolor_mid = f"-modulate 100,0 -edge {edge_radius} -fuzz 100% {recolor_str}"
-    return convertCMD(srcimg, recolor_mid, "srcimg_edge")
-
-
 def EdgeHighlightCMD(edge_color:int|str, edge_radius) -> str:
     """returns partially-constructed command - format-string with an unfilled input-path and no output"""
     recolor_str = f"{RecolorStr('Black', 'Transparent')} {RecolorStr('White', edge_color)}"
     if (Globals.MAGICKLIBRARY == "IM"): # for some reason IM needs rgba specified, and fuzz cannot be 100%
-        recolor_mid = f"-threshold 25% -channel rgba -modulate 100,0 -edge {edge_radius} -fuzz 99% {recolor_str}"
+        recolor_mid = f"-threshold '25%' -channel rgba -modulate 100,0 -edge {edge_radius} -fuzz '99%' {recolor_str}"
         # also, '-threshold' is required, otherwise the edge-detection goes insane and traces just about every pixel. Order matters; the outcome is slightly different if you move 'threshold' later.
     else: # saturation 0% and fuzz 100% to isolate all the non-white pixels
-        # recolor_mid = f"-operator all Threshold-Black 25% -operator all Threshold-White 75% -modulate 100,0 -edge {edge_radius} -fuzz 100% {recolor_str}"
-        recolor_mid = f"-modulate 10,0 -edge {edge_radius} -fuzz 100% {recolor_str}"
-    return "convert {0} -contrast -contrast " + recolor_mid  # doesn't contain output; needs to be appended manually
-
+        recolor_mid = f"-modulate 10,0 -edge {edge_radius} -fuzz '100%' {recolor_str}"
+    return "convert {0} -contrast -contrast " + recolor_mid
 
 def argstr_GIF(delay:int) -> tuple[str,str]:
     """:returns: arg-string before and after input"""

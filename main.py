@@ -458,9 +458,11 @@ def SubCommand(cmdline:list[str]|str, logname:str|None = "main", isCmdSequence:b
         cmdline_str = (cmd_seq[0] if isinstance(cmdline,str) 
                        else ("\n" if isCmdSequence else " ").join(cmd_seq))
         logfile.write(cmdline_str); logfile.write("\n\n"); logfile.flush()
+        stderr_dest = (logfile if not skiplog else None)
+        use_shell = (isinstance(cmd_seq[0],str))
         for cmd in cmd_seq: # prints stdout, logs stderr
-            completed = subprocess.run(cmd, check=True, stdout=None, stderr=(logfile if not skiplog else None), encoding="utf-8", shell=(isinstance(cmd,str)))
-            if (completed.returncode != 0): print(f"[ERROR] nonzero exit-status: {completed.returncode}\n");
+            completed = subprocess.run(cmd, check=True, stdout=None, stderr=stderr_dest, encoding="utf-8", shell=use_shell)
+            if (completed.returncode != 0): print(f"[ERROR] nonzero exit-status: {completed.returncode}\n"); break;
         logfile.write('_'*120); logfile.write("\n\n")
     
     print("\n")
