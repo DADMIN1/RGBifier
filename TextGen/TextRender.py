@@ -203,6 +203,41 @@ def GenerateTextCommand(text:str, pointsize:int, pzs_calcs:tuple[int,int,int] = 
     return command
 
 
+# this only works in pycharm debugger; in a real terminal the logging prefix/output is not split over two lines
+import subprocess
+def CheckFontMetrics(text:str, pointsize:int):
+    filtered_text = f'"{FilterText(text, allow_symbols=True)}"' # TODO: should exclude quotations
+    command = f"convert-im6.q16 -debug annotate xc:none -font '{FONTFILE}' -pointsize {pointsize} -draw 'text 0,0 {filtered_text}' null:"
+    # 'null:' specifies empty output (while avoiding the usual error)
+    
+    completed = subprocess.run(command, shell=True, text=True, encoding="utf-8", capture_output=True)
+    if (completed.returncode != 0): print(f"[ERROR] nonzero exit-status: {completed.returncode}\n");
+    
+    lines = [line.strip() for line in completed.stderr.splitlines()]; assert(len(lines) > 0);
+    metrics = [line for line in lines if line.startswith('Metrics: ')][0].removeprefix('Metrics: '); # debug info is always repeated 2-3x, for unknown reasons
+    metrics_dict = {
+        K:V for (K,V) in [
+            (pair.split(': ', maxsplit=1))
+            for pair in metrics.split('; ')
+        ]
+    }
+    # keys: [text width height ascent descent max advance bounds origin pixels per em underline position underline thickness]
+    return metrics_dict
+
+# output of the empty-image text-draw is like this:
+# [Annotate::RenderFreetype]: Font Fonts/dejavu/DejaVuSerif.ttf; font-encoding none; text-encoding none; pointsize 72
+# [Annotate::GetTypeMetrics]: Metrics: text: sometext; width: 333; height: 84; ascent: 67; descent: -17; max advance: 154; bounds: 0,-1  66.3125,50; origin: 333,0; pixels per em: 72,72; underline position: -2.98828; underline thickness: 3.16406
+# the 'RenderFreetype' lines seem to always reports encodings as 'none', even when producing visible output with nonzero dimensions
+
+# however, the output captured by subprocess.run is somehow missing the formatting applied by magick's logging config
+# fortunately, the metainfo normally prepended to each line of output is actually put on a seperate line from the output data,
+# so you can just split by lines, and find the one starting with 'Metrics: '
+
+# geometry parameter for '-annotate' is actually controlling rotation/shear
+#command = f"imagemagick -debug annotate xc:none -font 'Fonts/dejavu/DejaVuSerif.ttf' -pointsize 72 -annotate 0x0+0+0 'TestString' null:"
+
+
+
 # -------------------------------------------------------------------------------------------- #
 
 
