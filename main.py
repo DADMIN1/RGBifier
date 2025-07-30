@@ -402,6 +402,12 @@ def MakeImageSources(workdir:pathlib.Path, input_file:pathlib.Path, max_frames:i
         source.indexlength = index_length
         task_info['frames_max'] = FC
     else:
+        if (og_suffix.lower() != 'png'): # non-PNG images must be converted to PNG
+            basepng_path = baseimg_path.with_suffix(".png")
+            ft_prefix = ('JPEG' if (og_suffix.lower() == 'jpg') else og_suffix.upper())
+            os.system(f"gm convert '{ft_prefix}:{baseimg_path}' 'PNG:{basepng_path}'")
+            baseimg_path = basepng_path
+        
         os.system(f"cp --verbose '{baseimg_path}' '{src_path}'")
         print(f"preprocessed source created: '{src_path}'")
     

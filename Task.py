@@ -93,6 +93,10 @@ class TaskT():
     self.frame_formats = [ primary_format, ]
     if (('APNG' in output_fileformats) or ('MP4' in output_fileformats)): self.frame_formats.append('PNG');
     
+    self.baseimgformat_override = "MPC" # override format of the first conversion to MPC for better performance
+    if ((self.image_source.frame_count > 2000) and (self.primary_format != "MPC")): self.baseimgformat_override = primary_format;
+    # except gigantic tasks must prioritize avoiding OOM instead - unless MPC is specified, cancel the override
+    
     self.did_preprocess_img = False
     self.image_preprocessed = None # list of ImageSourceT converted to .miff - color-swapped, scaled and/or cropped
     self.preprocessing_cmds = []
@@ -323,7 +327,7 @@ def ImagePreprocess(task:TaskT, intermediate_format=None):
         return modsink
     
     
-    baseimg = CreateSink("baseimg_primary_format", "MPC")
+    baseimg = CreateSink("baseimg_primary_format", task.baseimgformat_override)
     QueueTransform(f"convert {current_img.magic} -matte {task.crop}")
     current_img = baseimg
     
