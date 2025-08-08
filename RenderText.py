@@ -25,9 +25,10 @@ def FilterText(text:str, allow_whitespace=True, allow_symbols=False) -> str:
     return text
 
 
-def CheckFontMetrics(text:str, fontpath:pathlib.Path, pointsize:int):
+def CheckFontMetrics(text:str, fontpath:pathlib.Path, pointsize:int, kerning:int|None):
     filtered_text = f'"{FilterText(text, allow_symbols=True)}"' # TODO: should exclude quotations
-    command = f"convert-im6.q16 -debug annotate xc:none -font '{fontpath}' -pointsize {pointsize} -draw 'text 0,0 {filtered_text}' null:"
+    kerning_string = ("" if (kerning is None) else f"-kerning {kerning}")
+    command = f"convert-im6.q16 -debug annotate xc:none -font '{fontpath}' -pointsize {pointsize} {kerning_string} -draw 'text 0,0 {filtered_text}' null:"
     # 'null:' specifies empty output (while avoiding the usual error)
     # ImageMagick is required; GraphicsMagick cannot report font metrics
     
@@ -36,7 +37,7 @@ def CheckFontMetrics(text:str, fontpath:pathlib.Path, pointsize:int):
     print(completed.stderr); print('\n');
     
     lines = [line.strip() for line in completed.stderr.splitlines()]; assert(len(lines) > 0);
-    metrics_line = [line for line in lines if ('Metrics: ' in line)][0] # debug info is always repeated 2-3x, for unknown reasons
+    metrics_line = [line for line in lines if ('Metrics: ' in line)][-1] # debug info is always repeated 2-3x, for unknown reasons
     metrics = metrics_line.split('Metrics: ', maxsplit=1)[-1]
     metrics_dict = {
         K:V for (K,V) in [
@@ -48,10 +49,11 @@ def CheckFontMetrics(text:str, fontpath:pathlib.Path, pointsize:int):
     return metrics_dict
 
 
-def BuildCommandline(text:str, fontpath:pathlib.Path, pointsize:int, fg_color:str|None, bg_color:str=None, output_filename:str=None) -> (str, pathlib.Path):
+def BuildCommandline(text:str, fontpath:pathlib.Path, pointsize:int, kerning:int|None, fg_color:str|None, bg_color:str=None, output_filename:str=None) -> (str, pathlib.Path):
     filtered_text = FilterText(text, allow_symbols=True)
-    metrics_dict = CheckFontMetrics(filtered_text, fontpath, pointsize)
+    metrics_dict = CheckFontMetrics(filtered_text, fontpath, pointsize, kerning)
     (width, height, Yoffset) = (metrics_dict["width"], metrics_dict["height"], metrics_dict["ascent"])
+    # TODO: need to get adjusted image dimensions after "-trim +repage" (which don't affect 'CheckFontMetrics' output)
     
     def AbbrevColor(color:str):
         match color.upper():
@@ -63,9 +65,12 @@ def BuildCommandline(text:str, fontpath:pathlib.Path, pointsize:int, fg_color:st
     if (bg_color is None): bg_color = "none"; # transparent background
     abbreviated_color_suffix = f"{AbbrevColor(fg_color)}{AbbrevColor(bg_color)}"
     
-    if not output_filename: output_filename = FilterText(text, False)[:16]; # limit automatic filename length to 16 chars
+    spacings_str = (f"" if (kerning is None) else f"_{kerning}K")
+    if not output_filename: output_filename = FilterText(text, False)[:32]; # limit automatic filename length to 32 chars
     else: output_filename = FilterText(output_filename); # allow whitespace in filename only when specified
-    output_filename += f"-{fontpath.stem}_{pointsize}_{width}x{height}+{Yoffset}_{abbreviated_color_suffix}.png"
+    appending_string = f"-{fontpath.stem}_{pointsize}{spacings_str}_{width}x{height}+{Yoffset}_{abbreviated_color_suffix}.png"
+    output_filename += appending_string
+    # TODO: configuration of filename template
     
     quoted_text_str = f'text 0,{Yoffset} "{filtered_text}"'
     # the order of nested quotations here is critical: double-quote INNER text, single-quotes OUTSIDE!
@@ -75,14 +80,16 @@ def BuildCommandline(text:str, fontpath:pathlib.Path, pointsize:int, fg_color:st
     command = f"convert-im6.q16 -size {width}x{height} "
     command += f"xc:{bg_color} "
     command += f"-font '{fontpath}' -pointsize {pointsize} "
+    command += ("" if (kerning is None) else f"-kerning {kerning} ")
     command += f"-fill {fg_color} -draw '{quoted_text_str}' " # reminder that single-quotes, not-double, are mandatory here
+    command += "-trim +repage " # aggressively crop to text, remove old virtual-canvas size
     command += f"'/tmp/RGB_TOPLEVEL/{output_filename}'"
     return (command, output_filename)
 
 
 def DoEverything():
     (text_cmdline, (parsed_args, unparsed)) = Typesetting.Subparser.ParseCmdline(positional_syntax=True)
-    (text_command, output_filename) = BuildCommandline(text_cmdline.m_string, text_cmdline.fontpath, text_cmdline.fontsize, text_cmdline.color_fg, text_cmdline.color_bg)
+    (text_command, output_filename) = BuildCommandline(text_cmdline.m_string, text_cmdline.fontname, text_cmdline.fontsize, text_cmdline.spacingK, text_cmdline.color_fg, text_cmdline.color_bg, text_cmdline.basename)
     print(text_command); print('\n');
     subprocess.run(text_command, shell=True, text=True, encoding="utf-8")
     print(f"\n/tmp/RGB_TOPLEVEL/{output_filename}");
@@ -93,11 +100,3 @@ if __name__ == "__main__":
     DoEverything()
     print("\ndone\n")
     
-    # from pprint import pprint
-    # def _main():
-    #     (text_cmdline, (parsed_args,unparsed)) = Typesetting.Subparser.ParseCmdline(positional_syntax=True);
-    #     print("Text Command: "); pprint(text_cmdline, indent=4, width=150); print('');
-    #     print("parsed args:", end='\n\t'); pprint(parsed_args, indent=4); print('\n');
-    #     print("unhandled args:", end='\n\t'); pprint(unparsed, indent=4); print('\n');
-    #     # ParseCmdline(arglist=["--help"])
-    # _main()
