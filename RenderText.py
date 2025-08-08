@@ -27,7 +27,7 @@ def Validation_Default(parsed_args:argparse.Namespace, textcmd:TextSubcommand):
 
 
 from Globals import PROGRAM_DIR 
-FONTS_DIR = PROGRAM_DIR/"TextGen"/"Fonts"; assert(FONTS_DIR.is_dir()), "missing fonts directory";
+FONTS_DIR = PROGRAM_DIR/"Typesetting"/"Fonts"; assert(FONTS_DIR.is_dir()), "missing fonts directory";
 FONTFILES = [*FONTS_DIR.glob("*/*")]
 
 def FindFont(name:str) -> pathlib.Path:
