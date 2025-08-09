@@ -13,7 +13,7 @@ import Globals
 import Config
 import Task
 import RGB
-
+import RenderText
 
 
 def SetupENV(alt_defaults:dict) -> dict:
@@ -519,7 +519,10 @@ def Main(identify_srcimg=False):
     args = ParseCmdline(conf_cmdline_args); Globals.Break("PARSE_ONLY")
     if args is None: exit(0); # debug mode or arglist contained '--help'
     
-    image_md5sum = subprocess.check_output(["md5sum", str(args.image_path)])
+    # RenderText being used as input-image - which doesn't actually exist yet
+    if (hasattr(args, "RenderTextInput")): # hash the filepath itself instead
+        image_md5sum = subprocess.check_output(["md5sum", '-'], input=bytes(args.image_path))
+    else: image_md5sum = subprocess.check_output(["md5sum", str(args.image_path)]);
     checksum = str(image_md5sum, encoding="utf-8").split()[0]
     assert(len(checksum) == 32), "MD5-hash did not match expected length"
     
@@ -530,6 +533,16 @@ def Main(identify_srcimg=False):
     output_directory = ResolveOutputPath(args, workdir.parent)
     print(f"output_directory resolved to: {output_directory}")
     Globals.Break("PARSE_ONLY") # select with '--parse-only 2'
+    
+    # RenderText being used as input-image; need to generate it now
+    if (hasattr(args, "RenderTextInput")):
+        RenderTextCmd = args.RenderTextCmd
+        assert('default_image_path' not in args.image_path.name), "image_path was not updated to match RenderText output";
+        # cannot call SubCommand before log_dir is set by UpdateGlobals (also, Globals have not been updated yet)
+        print(f"\n{'_'*120}\n{' '*53}TEXT RENDERING\n{'_'*120}")
+        subprocess.run(RenderTextCmd, shell=True, check=True, encoding="utf-8")
+        assert(args.image_path.exists()), f"expected RenderText output at: '{args.image_path}'";
+        args.rendertext = None # avoiding another 'rendertext' subcommand later
     
     frames_max = (args.duration if (isD := (args.duration is not None)) else args.framecap)
     (source, baseimg, stream_info) = MakeImageSources(workdir, args.image_path, frames_max)
@@ -562,6 +575,15 @@ def Main(identify_srcimg=False):
         print(baseimg); print(srcimg); print(f"\n{'_'*120}\n")
         SubCommand(f"{('gm convert -list resources' if (Globals.MAGICKLIBRARY=="GM") else 'identify -list resource')}", logname=None)
         SubCommand(f"{('gm ' if (Globals.MAGICKLIBRARY=="GM") else '')}identify -verbose {str(srcimg)}", logname=None)
+    
+    # text-rendering performed here if an image was given as input. otherwise,
+    # if rendered-text is being used as input, it has already been generated
+    if (args.rendertext is not None): # reset if RenderTextInput
+        print(f"\n{'_'*120}\n{' '*50}TEXT RENDERING\n{'_'*120}")
+        (renderTextCmd, rtoutput) = RenderText.BuildCommandline(args.rendertext, workdir)
+        SubCommand(renderTextCmd, "text_rendering")
+        rtoutput.rename(workdir/'renderedtext.png')
+    # TODO: integrate rendered-text into the processing pipeline when source-image is also present
     
     output_filename = f"{source.safe_filename}_RGB"
     print(f"output_filename: {output_filename}")

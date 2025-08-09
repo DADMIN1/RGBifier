@@ -3,6 +3,8 @@ import argparse
 import textwrap
 
 import Globals
+import RenderText
+import Typesetting.Subparser
 
 
 # replaces nonbasic characters in text (for filename generation)
@@ -95,6 +97,7 @@ def ParseCmdline(arglist:list[str]|None = None, *, debug_mode=False, ignore_inpu
     
     parser.exit_on_error = (not debug_mode)
     if (ignore_input_path is None): ignore_input_path = debug_mode;
+    default_image_path = pathlib.Path('default_image_path.png')
     
     # TODO: print condition's source-code in debug_mode (especially on failure)
     def _ASSERT(condition:bool, errmsg:str, *, print_status=debug_mode):
@@ -126,6 +129,8 @@ def ParseCmdline(arglist:list[str]|None = None, *, debug_mode=False, ignore_inpu
     group_system.add_argument('--nowrite', action="store_true", help="disables relocation of outputs to their final destinations")
     # TODO: fix the display of '--noclean'/autodelete's default message
     
+    # alternative non-positional form of 'output_dir' (useful when using '--rendertext' without an input-image)
+    group_output.add_argument("--output-dir", dest="output_dir", type=ExplicitPath, metavar="OUTPUT_DIR", help="output location - same as input by default (alternative non-positional arg)")
     group_output.add_argument("--mkdir", action="store_true", help="create output-directory if necessary (all parents must already exist)")
     group_output.add_argument("--mkdir-parent", action="store_true", help="mkdir also creates any missing parent-directories (implies '--mkdir')")
     group_relopt.add_argument("--relative-img", action="store_true", help="reinterpret the output-directory relative to location of source-image")
@@ -231,7 +236,6 @@ def ParseCmdline(arglist:list[str]|None = None, *, debug_mode=False, ignore_inpu
         +"MP4 and APNG outputs require ffmpeg"
     )
     
-    # TODO: option to minimize memory-usage by deleting intermediate frames immediately after their final use
     valid_frameformats = FormatList('MPC','MIFF')
     parser.add_argument("--tempformat",
         choices=valid_frameformats,
@@ -247,6 +251,17 @@ def ParseCmdline(arglist:list[str]|None = None, *, debug_mode=False, ignore_inpu
             \b""") # prevents an annoying space being inserted before (default: )
     )
     
+    rendertext_help = textwrap.dedent("""\
+        string to render (should be single-quoted)
+        When this argument is present on the command-line,
+        and no input-image is specified, the rendered text will be RGBified.
+        All RenderText-options present on the command-line will be included."""
+    )
+    
+    primary_args.add_argument("--rendertext", metavar="TEXT", help=rendertext_help)
+    # only stores the '--text' value; even with 'nargs=*', it only consumes one arg
+    # commandline args will get passed back and forth with the RenderText subparser instead
+    
     # printing usage would not display these because they haven't been added yet
     patched_usage = f"{parser.format_usage()}\t\tIMAGE [DIRECTORY]\n"
     helpmsg = parser.format_help().removeprefix(parser.format_usage()) # removing incomplete usage from help
@@ -260,17 +275,48 @@ def ParseCmdline(arglist:list[str]|None = None, *, debug_mode=False, ignore_inpu
         parsed_args = parser.parse_args(arglist)
         print(f"[parsed arglist]: {parsed_args}")
     
+    # seperating out the rendertext args
+    # must do this before any positional-args are added, otherwise it eats args meant for subparser
+    (parsed_args, unparsed) = parser.parse_known_args(namespace=parsed_args)
+    # Do NOT use 'parse_known_INTERMIXED_args' - causes bizarre errors when called from main:
+        # _format_usage: usage = usage % dict(prog=self._prog) <-- internal argparse function
+        # ValueError: unsupported format character ']' (0x5d) at index 336
+    
+    if parsed_args.rendertext is not None:
+        rendertext_args = ["--text", parsed_args.rendertext, *unparsed]
+        if debug_mode: print(f"rendertext args: {rendertext_args}");
+        (RTparameters, (text_args, remainder)) = Typesetting.Subparser.ParseCmdline(rendertext_args)
+        if debug_mode:
+            print(f"RT_params: {RTparameters}\n")
+            print(f"text_args: {text_args}\n")
+            print(f"remainder: {remainder}\n")
+        parsed_args.rendertext = RTparameters
+        unparsed = remainder
+        
+        # image-path not provided - rendertext output will be used as input instead
+        if (len(remainder) == 0): # assuming this means no positionals were given
+            print("image_path argument is absent; using rendertext instead\n")
+            if (parsed_args.rendertext.basename is None):
+                parsed_args.rendertext.basename = "rendered_text"
+            basename = RenderText.FilterText(parsed_args.rendertext.basename)
+            (RT_cmd, RT_filepath) = RenderText.BuildCommandline(RTparameters)
+            parsed_args.__setattr__("RenderTextInput", True)
+            parsed_args.__setattr__("RenderTextCmd", RT_cmd)
+            default_image_path = RT_filepath
+            ignore_input_path = True
+    # done with rendertext subparser
+    
     # defining this first to provide a default value; defining after doesn't work. BOTH arguments need 'nargs=argparse.SUPPRESS'
-    if ignore_input_path: primary_args.add_argument("image_path", help=argparse.SUPPRESS, nargs=argparse.SUPPRESS, type=pathlib.Path, default=pathlib.Path('default_image_path.png'));
+    if ignore_input_path: primary_args.add_argument("image_path", help=argparse.SUPPRESS, nargs=argparse.SUPPRESS, type=pathlib.Path, default=default_image_path);
     
     # positional arguments must be added after initial arglist parse, otherwise providing an image-path is absolutely mandatory.
     # argparse forcibly terminates when image-path isn't provided, even if an image-path has already been set in the Namespace.
-    # this behavior cannot be avoided by disabling 'exit_on_error', and even when using 'parse_known_args' and 'parse_intermixed_args'.
+    # this behavior cannot be avoided by disabling 'exit_on_error', not even for 'parse_known_args' or 'parse_intermixed_args'.
     primary_args.add_argument("image_path", type=pathlib.Path, metavar="IMAGE", help="path of image being RGBified (this argument is mandatory)", nargs=(argparse.SUPPRESS if ignore_input_path else None))
-    primary_args.add_argument("output_dir", type=ExplicitPath, metavar="DIRECTORY", nargs='?', help="output location - same as input by default")
+    primary_args.add_argument("output_dir", type=ExplicitPath, metavar="DIRECTORY", help="output location - same as input by default", nargs=(argparse.SUPPRESS if (parsed_args.output_dir is not None) else '?'))
+    # "nargs=SUPPRESS" is necessary on output_dir because both positional/keyword forms exist; otherwise the positional always forces its value to None
     
-    
-    parsed_args = parser.parse_args(namespace=parsed_args)
+    parsed_args = parser.parse_args(args=unparsed, namespace=parsed_args)
     print(f"[parsed cmdline]: {parsed_args}\n")
     
     parsed_args.image_path = parsed_args.image_path.expanduser().resolve().absolute()
@@ -370,7 +416,10 @@ def ParseCmdline(arglist:list[str]|None = None, *, debug_mode=False, ignore_inpu
     if (parsed_args.framecap is not None): ASSERT((parsed_args.framecap >= 0), "framecap must be positive");
     if (parsed_args.duration is not None): ASSERT((parsed_args.duration >= 0), "duration must be positive");
     
-    if debug_mode: print(""); # spacing after ASSERT-messages 
+    if debug_mode: print(""); # spacing after ASSERT-messages
+    if (hasattr(parsed_args, "RenderTextInput")): # unsetting 'ignore_input_path' so that parsed_args is returned
+        ignore_input_path = False; # set earlier to allow parsing without an input_path
+    
     print(parsed_args) # Namespace(...)
     PrintDict(parsed_args.__dict__, "args")
     return (parsed_args if not (debug_mode or ignore_input_path) else None)

@@ -26,7 +26,7 @@ def CreateParser(positional_syntax:bool) -> argparse.ArgumentParser:
     else: textparser.add_argument('--text', required=True);
     
     availfonts = { font.stem for font in FontManager.FONTFILES }
-    textparser.add_argument('--font', type=FontManager.FindFont, help=f"available fonts: {availfonts}")
+    textparser.add_argument('--font', type=FontManager.FindFont, default=FontManager.DEFAULT_FONT, help=f"available fonts: {availfonts}")
     
     group_size = textparser.add_argument_group("sizing")
     sizingArgs = group_size.add_mutually_exclusive_group(required=True)
@@ -34,8 +34,9 @@ def CreateParser(positional_syntax:bool) -> argparse.ArgumentParser:
     sizingArgs.add_argument('--imgWidth', type=int, help="automatically adjust font-size to fit the text to this width")
     textparser.add_argument('--kerning', type=int, help="spacing between letters (negative values are allowed)")
     
-    grp_colors = textparser.add_argument_group("colors")
-    grp_colors.add_argument('--fg') # StrHex
+    grp_colors = textparser.add_argument_group("colors") # StrHex
+    # default 'red' when called from main CLI (black/white would not change otherwise)
+    grp_colors.add_argument('--fg', default=("RED" if not positional_syntax else None))
     grp_colors.add_argument('--bg')
     
     # "default=SUPPRESS" is necessary when both positional/keyword forms exist; otherwise the positional forces its value to None
@@ -49,7 +50,7 @@ def ParseCmdline(arglist:list[str]|None = None, positional_syntax:bool=False):
     textparser = CreateParser(positional_syntax)
     (parsed_args, unparsed) = textparser.parse_known_intermixed_args(arglist)
     
-    text_cmdline = TextRenderParams (
+    RTparameters = TextRenderParams (
         m_string = parsed_args.text,
         fontname = parsed_args.font,
         fontsize = parsed_args.fontsize,
@@ -63,7 +64,7 @@ def ParseCmdline(arglist:list[str]|None = None, positional_syntax:bool=False):
     # when this script is run as main program, all arguments should be recognized
     if (positional_syntax and (len(unparsed) > 0)):
         raise SyntaxError(f"unrecognized arguments: {unparsed}");
-    return (text_cmdline, (parsed_args, unparsed));
+    return (RTparameters, (parsed_args, unparsed));
 
 
 

@@ -1,7 +1,10 @@
 import pathlib
 import subprocess
 
-import Typesetting.Subparser
+from Typesetting.Subparser import (TextRenderParams, ParseCmdline)
+
+# ImageMagick command - required for 'CheckFontMetrics' (GraphicsMagick doesn't report them) 
+IM_CONVERTCMD = "convert-im6.q16"
 
 
 # replaces nonbasic characters in text (for filename generation)
@@ -28,7 +31,7 @@ def FilterText(text:str, allow_whitespace=True, allow_symbols=False) -> str:
 def CheckFontMetrics(text:str, fontpath:pathlib.Path, pointsize:int, kerning:int|None):
     filtered_text = f'"{FilterText(text, allow_symbols=True)}"' # TODO: should exclude quotations
     kerning_string = ("" if (kerning is None) else f"-kerning {kerning}")
-    command = f"convert-im6.q16 -debug annotate xc:none -font '{fontpath}' -pointsize {pointsize} {kerning_string} -draw 'text 0,0 {filtered_text}' null:"
+    command = f"{IM_CONVERTCMD} -debug annotate xc:none -font '{fontpath}' -pointsize {pointsize} {kerning_string} -draw 'text 0,0 {filtered_text}' null:"
     # 'null:' specifies empty output (while avoiding the usual error)
     # ImageMagick is required; GraphicsMagick cannot report font metrics
     
@@ -49,7 +52,15 @@ def CheckFontMetrics(text:str, fontpath:pathlib.Path, pointsize:int, kerning:int
     return metrics_dict
 
 
-def BuildCommandline(text:str, fontpath:pathlib.Path, pointsize:int, kerning:int|None, fg_color:str|None, bg_color:str=None, output_filename:str=None) -> (str, pathlib.Path):
+def BuildCommandline(P: TextRenderParams, output_directory=pathlib.Path("/tmp/RGB_TOPLEVEL/")):
+    text      = P.m_string
+    fontpath  = P.fontname # TODO: resolving font-paths should be done here instead of in parser?
+    pointsize = P.fontsize
+    kerning   = P.spacingK
+    fg_color  = P.color_fg
+    bg_color  = P.color_bg
+    output_filename = P.basename
+    
     filtered_text = FilterText(text, allow_symbols=True)
     metrics_dict = CheckFontMetrics(filtered_text, fontpath, pointsize, kerning)
     (width, height, Yoffset) = (metrics_dict["width"], metrics_dict["height"], metrics_dict["ascent"])
@@ -76,24 +87,27 @@ def BuildCommandline(text:str, fontpath:pathlib.Path, pointsize:int, kerning:int
     # the order of nested quotations here is critical: double-quote INNER text, single-quotes OUTSIDE!
     # using the incorrect quotation-order makes it impossible to write text containing punctuation (!)
     
+    assert(output_directory.exists() and output_directory.is_dir());
+    output_filepath = output_directory / output_filename
+    
     # 'gm convert' also works here
-    command = f"convert-im6.q16 -size {width}x{height} "
+    command = f"{IM_CONVERTCMD} -size {width}x{height} "
     command += f"xc:{bg_color} "
     command += f"-font '{fontpath}' -pointsize {pointsize} "
     command += ("" if (kerning is None) else f"-kerning {kerning} ")
     command += f"-fill {fg_color} -draw '{quoted_text_str}' " # reminder that single-quotes, not-double, are mandatory here
     command += "-trim +repage " # aggressively crop to text, remove old virtual-canvas size
-    command += f"'/tmp/RGB_TOPLEVEL/{output_filename}'"
-    return (command, output_filename)
+    command += f"'{output_filepath}'"
+    return (command, output_filepath)
 
 
 def DoEverything():
-    (text_cmdline, (parsed_args, unparsed)) = Typesetting.Subparser.ParseCmdline(positional_syntax=True)
-    (text_command, output_filename) = BuildCommandline(text_cmdline.m_string, text_cmdline.fontname, text_cmdline.fontsize, text_cmdline.spacingK, text_cmdline.color_fg, text_cmdline.color_bg, text_cmdline.basename)
+    (RTparameters, (parsed_args, unparsed)) = ParseCmdline(positional_syntax=True)
+    (text_command, output_filepath) = BuildCommandline(RTparameters)
     print(text_command); print('\n');
     subprocess.run(text_command, shell=True, text=True, encoding="utf-8")
-    print(f"\n/tmp/RGB_TOPLEVEL/{output_filename}");
-    return output_filename
+    print(f"\n{output_filepath}");
+    return output_filepath
 
 
 if __name__ == "__main__":
