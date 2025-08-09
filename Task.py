@@ -364,6 +364,24 @@ def ImagePreprocess(task:TaskT, intermediate_format=None):
             QueueTransform(composite_cmd, sources=[recolor, current_img])
             current_img = composite # keep as base for edge-highlight
     
+    
+    TEXT_LAYERED_ABOVE = True
+    
+    # checking if rendertext output exists. If an source-image was provided the name is 'renderedtext.png'
+    # When the source-image IS rendertext output, the name contains an underscore instead: 'rendered_text'
+    # so these operations only apply when combining image+text (would be redundant if the source was text)
+    # [line:300 @ CLI.py] parsed_args.rendertext.basename = "rendered_text"
+    if (renderedText := (task.working_path / "renderedtext.png")).exists():
+        text_overlay = CreateSink("text_overlay")
+        if TEXT_LAYERED_ABOVE:
+            QueueTransform(f"composite 'PNG:{renderedText}' {current_img.magic} -compose Over")
+        else: # text is layered beneath the image instead of above (source-image must have transparent background)
+            QueueTransform(f"composite {current_img.magic} 'PNG:{renderedText}' -compose Over")
+            QueueTransform(f"composite {text_overlay.magic} {current_img.magic} -compose Over", sources=[text_overlay, current_img])
+        baseimg = text_overlay; current_img = baseimg;
+    
+    #TODO: steptext
+    #TODO: auto-adjust width (currently just clips when wider than source)
     #TODO: still not avoiding a redundant composite when edge-detection is disabled
     
     if task.edge_color is not None:

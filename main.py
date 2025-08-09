@@ -481,6 +481,7 @@ def SavePreprocessingCommands(workdir:pathlib.Path, expanded_commands:dict):
         "recolor_white": expanded_commands.get("$$srcimg_recolor_white$$", None),
         "recolor_black": expanded_commands.get("$$srcimg_recolor_black$$", None),
         "recolor_composite": expanded_commands.get("$$recolor_composite$$",None),
+        "text_overlay": expanded_commands.get("$$text_overlay$$", None),
         "edge": expanded_commands.get("$$srcimg_edge$$", None),
         "preprocessed": expanded_commands.get("$$srcimg_preprocessed$$", None),
         "final": expanded_commands.get("$$srcimg$$", None),
@@ -583,7 +584,6 @@ def Main(identify_srcimg=False):
         (renderTextCmd, rtoutput) = RenderText.BuildCommandline(args.rendertext, workdir)
         SubCommand(renderTextCmd, "text_rendering")
         rtoutput.rename(workdir/'renderedtext.png')
-    # TODO: integrate rendered-text into the processing pipeline when source-image is also present
     
     output_filename = f"{source.safe_filename}_RGB"
     print(f"output_filename: {output_filename}")
