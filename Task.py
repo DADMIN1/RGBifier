@@ -66,6 +66,7 @@ class TaskT():
         output_filename:str,
         output_directory:pathlib.Path,
         output_fileformats:list[str],
+        additional_sources:list[ImageSourceT],
     ):
     self.working_path = workdir
     self.image_source = img_src
@@ -74,6 +75,7 @@ class TaskT():
     self.output_filename = output_filename
     self.output_directory = output_directory
     self.output_fileformats = output_fileformats
+    self.additional_sources = additional_sources
     
     self.crop = ParseCrop(crop, grav)
     self.rescales = (rescales if(rescales is not None) else ['100%'])
@@ -366,17 +368,13 @@ def ImagePreprocess(task:TaskT, intermediate_format=None):
     
     
     TEXT_LAYERED_ABOVE = True
-    
-    # checking if rendertext output exists. If an source-image was provided the name is 'renderedtext.png'
-    # When the source-image IS rendertext output, the name contains an underscore instead: 'rendered_text'
-    # so these operations only apply when combining image+text (would be redundant if the source was text)
-    # [line:300 @ CLI.py] parsed_args.rendertext.basename = "rendered_text"
-    if (renderedText := (task.working_path / "renderedtext.png")).exists():
-        text_overlay = CreateSink("text_overlay")
+    for renderedText in task.additional_sources:
+        magic_map[renderedText.magic] = renderedText # no entry exists because it wasn't created as a sink
+        text_overlay = CreateSink("text_overlay", sources=[renderedText, current_img])
         if TEXT_LAYERED_ABOVE:
-            QueueTransform(f"composite 'PNG:{renderedText}' {current_img.magic} -compose Over")
+            QueueTransform(f"composite {renderedText.magic} {current_img.magic} -compose Over", sources=[renderedText, current_img])
         else: # text is layered beneath the image instead of above (source-image must have transparent background)
-            QueueTransform(f"composite {current_img.magic} 'PNG:{renderedText}' -compose Over")
+            QueueTransform(f"composite {current_img.magic} {renderedText.magic} -compose Over", sources=[renderedText, current_img])
             QueueTransform(f"composite {text_overlay.magic} {current_img.magic} -compose Over", sources=[text_overlay, current_img])
         baseimg = text_overlay; current_img = baseimg;
     

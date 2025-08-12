@@ -275,6 +275,15 @@ def RotateMagickLogs(toplevel:pathlib.Path, keep_limit:int, verbose=False) -> pa
     return new_logdir
 
 
+def QueryImageSize(source: pathlib.Path) -> (int, int):
+    command_string = "gm identify -ping "
+    completed = subprocess.run([*command_string.split(), f'{source}'], check=True, capture_output=True, encoding="utf-8")
+    # 'testimages/test.png PNG 900x900+0+0 DirectClass 8-bit 267.5Ki 0.000u 0m:0.000000s' <-- example firstline
+    firstline = completed.stdout.splitlines()[0]
+    imageinfo = firstline.removeprefix(str(source)).strip().split()
+    imagesize = [*map(int,imageinfo[1].removesuffix('+0+0').split('x'))]
+    return imagesize
+
 # noinspection PyUnresolvedReferences
 # ^ every lookup on video_stream/audio_stream (video_stream['nb_frames'])
 # triggers this BS warning: "Cannot find reference '[' in 'None'"
@@ -347,6 +356,7 @@ def MakeImageSources(workdir:pathlib.Path, input_file:pathlib.Path, max_frames:i
         # formula: duration = "time_base" x "duration_ts"
         duration = (float(video_stream["duration"]))
         WxH = 'x'.join([str(D) for D in dimensions])
+        source.__setattr__("dimensions",dimensions)
         
         task_info = stream_info["task_info"] = {
             "acodec": None,
@@ -402,6 +412,7 @@ def MakeImageSources(workdir:pathlib.Path, input_file:pathlib.Path, max_frames:i
         source.indexlength = index_length
         task_info['frames_max'] = FC
     else:
+        source.__setattr__("dimensions", QueryImageSize(baseimg_path))
         if (og_suffix.lower() != 'png'): # non-PNG images must be converted to PNG
             basepng_path = baseimg_path.with_suffix(".png")
             ft_prefix = ('JPEG' if (og_suffix.lower() == 'jpg') else og_suffix.upper())
@@ -577,13 +588,32 @@ def Main(identify_srcimg=False):
         SubCommand(f"{('gm convert -list resources' if (Globals.MAGICKLIBRARY=="GM") else 'identify -list resource')}", logname=None)
         SubCommand(f"{('gm ' if (Globals.MAGICKLIBRARY=="GM") else '')}identify -verbose {str(srcimg)}", logname=None)
     
+    additional_sources = []
     # text-rendering performed here if an image was given as input. otherwise,
     # if rendered-text is being used as input, it has already been generated
     if (args.rendertext is not None): # reset if RenderTextInput
         print(f"\n{'_'*120}\n{' '*50}TEXT RENDERING\n{'_'*120}")
         (renderTextCmd, rtoutput) = RenderText.BuildCommandline(args.rendertext, workdir)
+        rendertext_relocation_path = workdir/'renderedtext.png'
         SubCommand(renderTextCmd, "text_rendering")
-        rtoutput.rename(workdir/'renderedtext.png')
+        rtoutput.rename(rendertext_relocation_path)
+        mpc_text = rendertext_relocation_path.with_suffix('.mpc')
+        conversion_command = f"{('gm ' if (Globals.MAGICKLIBRARY=="GM") else '')}convert '{rendertext_relocation_path}' 'MPC:{mpc_text}'"
+        SubCommand(conversion_command, "text_rendering")
+        text_source = Task.ImageSourceT(mpc_text, 'renderedtext')
+        text_source.image_format = 'MPC'
+        
+        # rescaling text to fit width
+        autosz = args.rendertext.autosize
+        dimensions = QueryImageSize(rendertext_relocation_path)
+        if (autosz and (dimensions[0] != source.dimensions[0])):
+            # 'dimensions' attr is added by MakeImageSources
+            width_ratio = source.dimensions[0] / dimensions[0]
+            rendertext_rescaled_path = mpc_text.with_name('renderedtext_rescaled')
+            rescale_cmd = f"{('gm ' if (Globals.MAGICKLIBRARY=="GM") else '')}convert '{mpc_text}' -scale '{int(width_ratio*100)}%' '{rendertext_rescaled_path}'"
+            text_source = Task.ImageSourceT(rendertext_rescaled_path, 'renderedtext_rescaled'); text_source.image_format = 'MPC'
+            SubCommand(rescale_cmd, logname="text_rendering")
+        additional_sources.append(text_source)
     
     output_filename = f"{source.safe_filename}_RGB"
     print(f"output_filename: {output_filename}")
@@ -610,6 +640,7 @@ def Main(identify_srcimg=False):
         output_filename,
         output_directory,
         args.output_formats,
+        additional_sources,
     )
     
     expected_outputs = Task.FillExpectedOutputs(task)

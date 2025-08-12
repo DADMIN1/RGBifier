@@ -11,6 +11,7 @@ class TextRenderParams:
     m_string: str|None;
     fontname: str|None;
     fontsize: int|None; # pointsize
+    autosize: bool
     imgWidth: int|None; # TODO: alternatively specified as fraction/percent of overlaid image-width
     color_fg: str|None; # TODO: StrHex/MaybePercent pseudotypes from CLI. Need to restructure files
     color_bg: str|None;
@@ -29,8 +30,9 @@ def CreateParser(positional_syntax:bool) -> argparse.ArgumentParser:
     textparser.add_argument('--font', type=FontManager.FindFont, default=FontManager.DEFAULT_FONT, help=f"available fonts: {availfonts}")
     
     group_size = textparser.add_argument_group("sizing")
-    sizingArgs = group_size.add_mutually_exclusive_group(required=True)
-    sizingArgs.add_argument('--fontsize', type=int)
+    sizingArgs = group_size.add_mutually_exclusive_group()
+    sizingArgs.add_argument('--fontsize', type=int, default=144)
+    sizingArgs.add_argument('--autosize', action="store_true", help="scale text to always match base image width")
     sizingArgs.add_argument('--imgWidth', type=int, help="automatically adjust font-size to fit the text to this width")
     textparser.add_argument('--kerning', type=int, help="spacing between letters (negative values are allowed)")
     
@@ -54,6 +56,7 @@ def ParseCmdline(arglist:list[str]|None = None, positional_syntax:bool=False):
         m_string = parsed_args.text,
         fontname = parsed_args.font,
         fontsize = parsed_args.fontsize,
+        autosize = parsed_args.autosize,
         imgWidth = parsed_args.imgWidth,
         color_fg = parsed_args.fg,
         color_bg = parsed_args.bg,
