@@ -1,6 +1,6 @@
 import json
 import Config
-import sys # stderr
+from sys import stderr as STDERR
 
 
 class BetterJSONDecoder(json.JSONDecoder):
@@ -8,7 +8,7 @@ class BetterJSONDecoder(json.JSONDecoder):
     debug_mode = False
     def __init__(self): super().__init__();
     def debug(self, index: int, text: str):
-        print(f"  [JSON_DEBUG][{index:3d}]: {text}", file=sys.stderr);
+        print(f"  [JSON_DEBUG][{index:3d}]: {text}", file=STDERR);
     # enabling debug_mode causes the decoder to report any invalid/incomplete data encountered during parsing
     # normally, those tokens would be silently ignored (likely comment lines or fragments of the file-header)
     
@@ -39,10 +39,35 @@ class BetterJSONDecoder(json.JSONDecoder):
                 else: raise(ERROR);
         
         if (_loaded_data is None) and (len(_ignored_exceptions) > 0):
-            print(f"decoding failed [last_index = {last_index}]: {_ignored_exceptions}", file=sys.stderr)
-        if (self.debug_mode): print('', file=sys.stderr, flush=True);
+            print(f"decoding failed [last_index = {last_index}]: {_ignored_exceptions}", file=STDERR)
+        if (self.debug_mode): print('',flush=True, file=STDERR);
         return _loaded_data
 
+
+def FormatColorList(colormap: dict, asHex=True, letterpfx=False, seperator='', linesep='\n'):
+    sample = [*colormap.values()][0];
+    assert(isinstance(sample, dict));
+    assert('srgb' in sample.keys());
+    
+    longest_key = max(len(K) for K in colormap.keys())
+    def Kpad(K:str): return ' ' * (longest_key-len(K))
+    
+    NumFormatter = (
+        (lambda n: hex(n).removeprefix('0x').upper().zfill(2)) if asHex else
+        (lambda n: str(n).zfill(3))
+    )
+    
+    if letterpfx: seperator = ' ';
+    if not asHex: seperator = ' ';
+    def RGB_Formatter(srgb: list):
+        return seperator.join([NumFormatter(N) if not letterpfx else
+            f"{L}:{NumFormatter(N)}" for (L,N) in zip('RGB', srgb)])
+    
+    formatted_color_list = [
+        f"{K}{Kpad(K)} {RGB_Formatter(V['srgb'])}"
+        for (K,V) in colormap.items()
+    ]
+    return linesep.join(formatted_color_list)
 
 
 def LoadMagickColors():
@@ -216,5 +241,9 @@ if __name__ == "__main__":
         json_text = json_text.replace(f'\n{indentations[-1]}', '') # removing newlines from last-level values
         json_text = json_text.replace(f'\n{indentations[0]}]',']') # closing braces are left at lower indentation
         print(json_text)
-        print('\ndone\n')
     PrintMaps()
+    
+    # the main difference between IM/GM colormaps is that IM includes both spellings of 'gray' / 'grey'
+    colorList = FormatColorList(loaded_maps["IM"], linesep='\n  ')
+    print(f"\nbuiltin color names:\n  {colorList}\n")
+    

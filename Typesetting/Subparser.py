@@ -5,6 +5,9 @@ from dataclasses import dataclass
 try: import Typesetting.FontManager as FontManager;
 except ModuleNotFoundError: import FontManager;
 
+from MagickColors import (LoadMagickColors, FormatColorList)
+from ParserTypes import *
+
 
 @dataclass
 class TextRenderParams:
@@ -22,7 +25,7 @@ class TextRenderParams:
 
 
 def CreateParser(positional_syntax:bool) -> argparse.ArgumentParser:
-    textparser = argparse.ArgumentParser(allow_abbrev=False)
+    textparser = argparse.ArgumentParser(allow_abbrev=False, formatter_class=CustomFormatter)
     if (positional_syntax): textparser.add_argument('text');
     else: textparser.add_argument('--text', required=True);
     
@@ -36,10 +39,25 @@ def CreateParser(positional_syntax:bool) -> argparse.ArgumentParser:
     sizingArgs.add_argument('--imgWidth', type=int, help="automatically adjust font-size to fit the text to this width")
     textparser.add_argument('--kerning', type=int, help="spacing between letters (negative values are allowed)")
     
-    grp_colors = textparser.add_argument_group("colors") # StrHex
-    # default 'red' when called from main CLI (black/white would not change otherwise)
-    grp_colors.add_argument('--fg', default=("RED" if not positional_syntax else None))
-    grp_colors.add_argument('--bg')
+    # IM includes both spellings for gray/grey
+    MAGICK_COLORMAP = LoadMagickColors()["IM"]
+    knownColorNames = FormatList(*MAGICK_COLORMAP.keys())
+    def ColorLookup(color):
+        if color in knownColorNames: return color; # no translation necessary
+        return f"'#{StrHex(color)[0].removeprefix('0x')}'" # always IM syntax
+    
+    grp_colors = textparser.add_argument_group("colors") # StrHex | colorname
+    grp_colors.description = "colors are specified by name ('Red', 'AliceBlue') or hex-value: RRGGBB[AA]"
+    if positional_syntax:
+        grp_colors.add_argument('--fg', metavar='COLOR', type=ColorLookup)
+        grp_colors.add_argument('--bg', metavar='COLOR', type=ColorLookup)
+    else:
+        grp_colors.add_argument('--textcolor', metavar='COLOR', type=ColorLookup, default='red')
+        # default 'red' value when called from main CLI (black/white would not change otherwise)
+    
+    if positional_syntax:
+        color_desc = textparser.add_argument_group("recognized color names") # exists to display color-info below grp_colors
+        color_desc.description = FormatColorList(MAGICK_COLORMAP, seperator='|')
     
     # "default=SUPPRESS" is necessary when both positional/keyword forms exist; otherwise the positional forces its value to None
     if (positional_syntax): textparser.add_argument('basename', default=argparse.SUPPRESS, metavar='output_name', nargs='?');
@@ -58,8 +76,8 @@ def ParseCmdline(arglist:list[str]|None = None, positional_syntax:bool=False):
         fontsize = parsed_args.fontsize,
         autosize = parsed_args.autosize,
         imgWidth = parsed_args.imgWidth,
-        color_fg = parsed_args.fg,
-        color_bg = parsed_args.bg,
+        color_fg = parsed_args.fg if positional_syntax else parsed_args.textcolor,
+        color_bg = parsed_args.bg if positional_syntax else None,
         basename = parsed_args.basename,
         spacingK = parsed_args.kerning,
     )
@@ -69,25 +87,3 @@ def ParseCmdline(arglist:list[str]|None = None, positional_syntax:bool=False):
         raise SyntaxError(f"unrecognized arguments: {unparsed}");
     return (RTparameters, (parsed_args, unparsed));
 
-
-
-# -------------------------------------------------------------------------------------------------------- #
-
-def Fuzzing():
-    results = []
-    for positional_syntax in [True, False]:
-        if (positional_syntax): arglist = ["nonpoz text string" , '--fontsize', '69', 'asdfpoz', 'extra'];
-        else: arglist = ['--text', "whatever textarg" , '--fontsize', '99', '--filename', 'asdf'];
-        
-        try:
-            print(arglist)
-            results.append( { "cmdline": arglist, "positional": positional_syntax, "result": None } )
-            result = ParseCmdline(arglist=arglist, positional_syntax=positional_syntax)
-            results[-1]["result"] = result; print(result); print('\n');
-        except Exception as EX:
-            print(EX); results[-1]["result"] = EX; print('\n');
-    
-    return results
-
-
-# -------------------------------------------------------------------------------------------------------- #

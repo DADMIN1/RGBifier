@@ -66,7 +66,9 @@ def BuildCommandline(P: TextRenderParams, output_directory=pathlib.Path("/tmp/RG
     (width, height, Yoffset) = (metrics_dict["width"], metrics_dict["height"], metrics_dict["ascent"])
     # TODO: need to get adjusted image dimensions after "-trim +repage" (which don't affect 'CheckFontMetrics' output)
     
+    # TODO: adjust to better accommodate all the recognized colornames. and hex-strings
     def AbbrevColor(color:str):
+        if not color.isalpha(): return '='; # custom color value
         match color.upper():
             case 'BLUE': return 'U'; # 'B' is reserved for black
             case 'NONE': return '_'; # transparent
