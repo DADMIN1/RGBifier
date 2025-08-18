@@ -67,11 +67,41 @@ class FormatList():
     def __getitem__(self, at): return self.strings.__getitem__(at); # []-subscript
 
 
-# custom formatter_class combining the behavior of two arparse formatters
-# allows newlines within help-text and automatically appends info about default value
-class CustomFormatter(argparse.RawTextHelpFormatter, argparse.ArgumentDefaultsHelpFormatter):
-    def __init__(self, prog): super().__init__(prog, indent_increment=2, max_help_position=32, width=70);
 
+class CustomFormatter(argparse.RawTextHelpFormatter, argparse.ArgumentDefaultsHelpFormatter):
+    """ custom formatter_class inheriting both 'DefaultsHelp-' and 'RawText-' HelpFormatters \n
+        allows newlines within help-text and automatically appends info about default values \n
+    suppresses indentation for description-text assigned to untitled (None) argument-groups """
+    def __init__(self, prog):
+      super().__init__(prog, indent_increment=2, max_help_position=32, width=70)
+      self._indentation=True
+#  ____________________________________________________________________________________________________
+# | these overrides manipulate indentation during formatting, targeting 'ArgumentParser.format_help()' |
+# | specifically, the function calls within the action-group formatting loop [argparse.py @line: 2622] |
+# |____________________________________________________________________________________________________|
+    def start_section(self, heading):
+        self._indentation = heading is not None
+        if (self._indentation): self._indent();
+        section = self._Section(self, self._current_section, heading)
+        self._add_item(section.format_help, [])
+        self._current_section = section
+    
+    def end_section(self):
+        self._current_section = self._current_section.parent
+        if (self._indentation): self._dedent();
+        self._indentation = True
+    
+    def _format_text_alt(self, text):
+        if('%(prog)' in text): text = (text % dict(prog = self._prog));
+        return self._fill_text(text, max(self._width, 11), '') + '\n\n'
+    
+    def add_text(self, text):
+        if (text is argparse.SUPPRESS) or (text is None): return;
+        if self._indentation: return self._add_item(self._format_text, [text]);
+        self._add_item(self._format_text_alt, [text]);
+# |____________________________________________________________________________________________________|
+
+# CustomFormatter cannot inherit 'MetavarType' helpformatter:
 # argparse.MetavarTypeHelpFormatter (default metavar = type) always fails with this error:
 # "AttributeError: 'NoneType' object has no attribute '__name__'. Did you mean: '__ne__'?"
 # seemingly triggered by any option without a 'type' specified (like any transform option)

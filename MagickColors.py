@@ -44,24 +44,48 @@ class BetterJSONDecoder(json.JSONDecoder):
         return _loaded_data
 
 
-def FormatColorList(colormap: dict, asHex=True, letterpfx=False, seperator='', linesep='\n'):
+def FormatColorList(
+        colormap: dict, asHex=True, hexpfx=False, letterpfx=None,
+        seperator=None, linesep='\n', ends=('',''), extra_width=1
+    ):
+    """
+    :param colormap: colormap
+    :param asHex: display values in hexadecimal
+    :param hexpfx: prefix values with '0x' (only if asHex is True)
+    :param letterpfx: add 'R/G/B' label to each component if True.
+        If letterpfx is a string, it is also appended to the label
+    :param seperator: inserted between each component (RGB)
+    :param linesep: appended to each line
+    :param ends: chars enclosing all displayed values on each line
+    :param extra_width: additional space after color-name
+    :return: formatted color list
+    """
     sample = [*colormap.values()][0];
     assert(isinstance(sample, dict));
     assert('srgb' in sample.keys());
+    assert(extra_width >= 0);
     
-    longest_key = max(len(K) for K in colormap.keys())
-    def Kpad(K:str): return ' ' * (longest_key-len(K))
+    longest_key = max([len(K) for K in colormap.keys()]) + extra_width;
+    def Kpad(K:str): return ' ' * (longest_key - len(K));
     
+    if (seperator is None): seperator = '';
+    if (len(seperator)==0):
+        if letterpfx: seperator = ' ';
+        if not asHex: seperator = ' ';
+    
+    # suppress per-component hex-prefix when displaying a single (6-digit) hex-value
+    one_hex = ((len(seperator) == 0) and (hexpfx is True))
+    Z = ('0x' if (asHex and hexpfx and (one_hex is False)) else '')
+    L = letterpfx if (letterpfx and isinstance(letterpfx, str)) else ''
     NumFormatter = (
-        (lambda n: hex(n).removeprefix('0x').upper().zfill(2)) if asHex else
-        (lambda n: str(n).zfill(3))
+        (lambda n: L+Z+hex(n).removeprefix('0x').upper().zfill(2)) if asHex else
+        (lambda n: L + str(n).zfill(3))
     )
     
-    if letterpfx: seperator = ' ';
-    if not asHex: seperator = ' ';
     def RGB_Formatter(srgb: list):
-        return seperator.join([NumFormatter(N) if not letterpfx else
-            f"{L}:{NumFormatter(N)}" for (L,N) in zip('RGB', srgb)])
+        _rgb = seperator.join([ NumFormatter(N) if not letterpfx else
+            f"{C}:{NumFormatter(N)}" for (C, N) in zip('RGB', srgb)])
+        return f"{ends[0]}{(('0x' if one_hex else '')+_rgb)}{ends[1]}"
     
     formatted_color_list = [
         f"{K}{Kpad(K)} {RGB_Formatter(V['srgb'])}"
@@ -230,9 +254,11 @@ def DumpMagickColors(allowed_compliance: str, disallow_numbered = True):
 
 if __name__ == "__main__":
     # BetterJSONDecoder.debug_mode = True
+    created_new = False
     loaded_maps = LoadMagickColors()
     if (loaded_maps is None):
         loaded_maps = DumpMagickColors("ALL")
+        created_new = True
     
     def PrintMaps():
         spaces = 4
@@ -241,9 +267,20 @@ if __name__ == "__main__":
         json_text = json_text.replace(f'\n{indentations[-1]}', '') # removing newlines from last-level values
         json_text = json_text.replace(f'\n{indentations[0]}]',']') # closing braces are left at lower indentation
         print(json_text)
-    PrintMaps()
+    if created_new: PrintMaps();
     
     # the main difference between IM/GM colormaps is that IM includes both spellings of 'gray' / 'grey'
-    colorList = FormatColorList(loaded_maps["IM"], linesep='\n  ')
-    print(f"\nbuiltin color names:\n  {colorList}\n")
+    #colorList = FormatColorList(loaded_maps["IM"], linesep='\n  ')
+    #print(f"\nbuiltin color names:\n  {colorList}\n")
     
+    import textwrap
+    formatted_colorlist = textwrap.dedent("""\
+       _____________________________________________________
+      | colormap entries (builtin names)                    |
+      |_____________________________________________________|\
+    """) + (colorlist_linesep := '\n| ');
+    formatted_colorlist += FormatColorList(loaded_maps["IM"], linesep = colorlist_linesep,
+      letterpfx='[', seperator='] ', ends=('','] |'), asHex=True, hexpfx=True, extra_width=4)
+    
+    print(formatted_colorlist)
+    print("|_____________________________________________________|\n")

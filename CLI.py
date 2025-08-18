@@ -37,8 +37,10 @@ def ParseCmdline(arglist:list[str]|None = None, *, debug_mode=False, ignore_inpu
     group_stepszs = parser.add_argument_group("modulation args")
     grp_transform = parser.add_argument_group("transformations")
     group_recolor = parser.add_argument_group("color-remapping")
-    
-    # grp_relative.title = None # prevents title from printing; leaving a single empty line above group
+    rendertextgrp = parser.add_argument_group("rendertext args")
+    textargs_help = parser.add_argument_group(None) # exists only to display RenderText-subparser usage
+    # group-title = None: instructs CustomFormatter to suppress indentation when formatting description
+    textargs_help.description = Typesetting.Subparser.SubparserInvocationSyntaxDescription + '\n'
     
     parser.add_argument("--print-only", nargs='?', metavar="limit", type=int, const=1, help="exit after printing the commands that would have been executed")
     parser.add_argument("--parse-only", nargs='?', metavar="limit", type=int, const=1, help="exit after completing commandline parsing (and loading config)")
@@ -145,7 +147,7 @@ def ParseCmdline(arglist:list[str]|None = None, *, debug_mode=False, ignore_inpu
         All RenderText-options present on the command-line will be included."""
     )
     
-    primary_args.add_argument("--rendertext", metavar="TEXT", help=rendertext_help)
+    rendertextgrp.add_argument("--rendertext", metavar="TEXT", help=rendertext_help)
     # only stores the '--text' value; even with 'nargs=*', it only consumes one arg
     # commandline args will get passed back and forth with the RenderText subparser instead
     
@@ -403,7 +405,7 @@ if __name__ == "__main__":
     import sys
     # note that default-args from user configs aren't loaded here
     if (len(sys.argv) == 1): # if no args given: sys.argv == ['CLI.py']
-        # TODO: --help output changes when passed in arglist (both are slightly broken - see line #197)
+        # TODO: --help output changes when passed in arglist (both are slightly broken - see line #158)
         assert(ParseCmdline(["--help"]) is None), "unexpected value returned by '--help' command";
         exit(0)
     
