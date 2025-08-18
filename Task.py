@@ -77,7 +77,7 @@ class TaskT():
     self.output_fileformats = output_fileformats
     self.additional_sources = additional_sources
     
-    self.crop = ParseCrop(crop, grav)
+    self.crop = BuildCropCommand(crop, grav)
     self.rescales = (rescales if(rescales is not None) else ['100%'])
     
     (
@@ -116,65 +116,22 @@ class TaskT():
   def GetRemapWB(self): return zip(self.whiteBlack, self.wb_fuzzing, self.thresholds, ('white','black'));
 
 
-def ParseCrop(cropstr:str|None, gravity:str="center") -> str:
-    valid_chars = "0123456789%x+-"
-    if ((cropstr is None) and (cropstr != '')): return '';
-    if not all([char in valid_chars for char in cropstr]):
-        print(f"[ERROR] invalid crop value: '{cropstr}'"); return '' 
+def BuildCropCommand(crop:tuple[int|str,int|str,int,int]|None, gravity:str="Center") -> str:
+    if (crop is None) or (crop == (0,0,0,0)): return '';
+    (W,H,X,Y) = crop
     
-    # plus/minus-signs interfere with 'isdigit/isdecimal' checks
-    # need to preserve value before stripping/splitting them out
-    index = -1
-    signs = {(index, C) for C in ('+','-') for _ in range(2) if ((index := cropstr.find(C, index+1)) != -1)}
-    if (len(signs) > 2): raise Exception(f"crop has too many plus/minus-signs: '{cropstr}' ({len(signs)})");
+    # when only one dimension is specified, set the other to a value that prevents it from being modified
+    if (W == 0): W = ('100%' if isinstance(H, str) else 32767);
+    if (H == 0): H = ('100%' if isinstance(W, str) else 32767);
     
-    # replacing offset only
-    #sign_offsets = [(I if ((I := cropstr.find(sign)) != -1) else None) for sign in '+-']
+    # trailing 'x' on width followed by an offset fails when height is missing (this is a bug in the GraphicsMagick parser)
+    # because it interprets the first offset as the height, which is problematic with the default '+0' (and in general)
+    # as a workaround, try to remove the default offset. otherwise remove the 'x'
+    # if ('x+' in fstr): fstr.replace('+0+0','').replace('x+','+');
+    # this workaround runs into a second bug: it fails to respect the 'gravity' parameter when no offset is specified
     
-    # divider between size and offsets
-    midpoint = (min([I for (I,_) in signs]) if (len(signs) > 0) else len(cropstr))
-    size_str = cropstr[:midpoint]
-    remaindr = cropstr[midpoint:]
-    
-    (W,ch,H) = ((S if (S != '') else None) for S in size_str.partition('x'))
-    # if only one size was given with an 'x', the other defaults 0 (image-size)
-    # if only one size was given, with no 'x', it applies to both
-    #    empty: [    +X+Y] -> [size: 0x0] (default size of image)
-    #   single: [  96+X+Y] -> [size: 96x96]
-    #   suffix: [640x+X+Y] -> [size: 640x0] (set width, default height)
-    #   prefix: [x480+X+Y] -> [size: 0x480] (set height, default width)
-    if all(((S is None) or (S == 'x')) for S in (W,ch,H)): (W,H) = ('0','0'); # no size specified at all
-    elif (ch == 'x'): (W, H) = (('0' if W is None else W), ('0' if H is None else H)); # defaults if 'x' was present
-    elif (ch is None): (W, H) = ((H if W is None else W), (W if H is None else H)); # without 'x', set both axes
-    
-    # both parts should be set by this point
-    if ((W is None) or (H is None)): raise Exception(f"failed to parse crop-size: '{size_str}'");
-    
-    # percentages
-    if any(percentage_check := [D.endswith('%') for D in (W, H)]):
-        (W, H) = [(N if (N := D.removesuffix('%')).isdigit() else None) for D in (W, H)]
-        if (None in (W, H)): raise Exception(f"invalid percentage in crop-size: '{size_str}'");
-        if not all((N.isdigit() if not B else ((int(N) > 0)) and (int(N) <= 100)) for (B,N) in zip(percentage_check, (W,H))):
-            raise Exception(f"percentage values out of range: ({W}x{H}); (valid range: [1-100])")
-    
-    # TODO: handle tile-cropping ('@' suffix): https://usage.imagemagick.org/crop/#crop_equal
-    
-    segments = [W, H, *[S for S in remaindr.replace('+',' ',2).replace('-',' ',2).split(' ',maxsplit=2) if (S != '')]]
-    if not all([segment.isdigit() for segment in segments]): raise Exception(f"[ERROR] non-digit in crop: {segments}");
-    
-    # integer conversion and re-applying signs
-    crop = [*[int(segment) for segment in segments], *[0 for _ in range(4-len(segments))]]; assert(len(crop) == 4);
-    for (I, (_,sign)) in zip(range(4-len(signs), 4), signs): crop[I] *= (-1 if (sign == '-') else 1);
-    
-    (W, H, X, Y) = crop
-    if ((W, H, X, Y) == (0, 0, 0, 0)): return '';
-    if not (all((I >= 0) for I in (W,H))): raise Exception(f"[ERROR] crop-size must not be negative: ({W}x{H})");
-    (W, H) = [(f"{N}%" if B else N) for (B,N) in zip(percentage_check, (W,H))] # re-applying percents
-    
-    #cropstr = "[{}x{}{:+d}{:+d}]".format(W,H,X,Y)
+    return "+repage -gravity {} -crop '{}x{}{:+d}{:+d}' +repage".format(gravity, W,H,X,Y)
     # '+repage' output to remove virtual-canvas (crop doesn't actually resize the canvas)
-    cropstr = "+repage -gravity {} -crop '{}x{}{:+d}{:+d}' +repage".format(gravity,W,H,X,Y)
-    return cropstr
 
 
 def ParseScales(rescales:list[str]) -> list[tuple[int,str]]:
@@ -535,66 +492,3 @@ def GenerateFrames(task:TaskT, enumRotations:list[tuple[str,str]]) -> tuple[list
     
     return (preprocess_commands, framegen_commands, render_commands, webp_rendercmds, ffmpeg_commands)
 
-
-
-def ParseCropFuzzing():
-    """tests 'ParseCrop()' with a bunch of random inputs"""
-    croptests = [
-        "640x480+64+128",
-        "640x480-64-128",
-        "640x480+64-128",
-        "640x480-64+128",
-        "640x480",
-        "640x480+64",
-        "640x480+0+128",
-        "640x480+0-128",
-        "640x",
-        "x480",
-        # percentages
-        "50%",
-        "360x75%",
-        "x25%+3-4",
-        "25%x+3-4",
-        "15%x240+1+2",
-        "50%x75%",
-        "75%+120+240",
-        # these should all return empty strings
-        "0x0+0+0",
-        "0","0-0+0",
-        "0x0","x0","0x",
-        "+0+0","-0-0",
-        "", None,
-    ]
-    # these are expected to throw an exception
-    croptests_badstr = [
-        "640x480+64+128+123",
-        " ", '-',
-        "x+-",
-        "-+x",
-        "-x+",
-        "+x-",
-        "1 2 3 4",
-        "1-2+3-4",
-        "1x2x3x4",
-        "xx480"
-        "-64+128",
-        "x-6+1",
-        "+111-222+640x480",
-        "+640x+480",
-        "999%",
-        "50%75%",
-        "-10%",
-        "0x0%+0+0",
-        "0%x+0",
-        "640x480+10%+10%",
-    ]
-    
-    croptest_results = [(T, ParseCrop(T)) for T in croptests]
-    bad_strs_results = []
-    for bad_str in croptests_badstr:
-        try: bad_strs_results.append((bad_str, ParseCrop(bad_str)));
-        except Exception as E: bad_strs_results.append((bad_str, E));
-    
-    print(croptest_results)
-    print(bad_strs_results)
-    return (croptest_results, bad_strs_results)

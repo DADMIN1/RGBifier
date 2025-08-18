@@ -71,9 +71,9 @@ def ParseCmdline(arglist:list[str]|None = None, *, debug_mode=False, ignore_inpu
         include '100%%' or '1x' to also produce full-size output."""
     )
     
-    grav = ["north","south","east","west"]; gravities = (*grav, *[''.join((P,S)) for P in grav[:2] for S in grav[2:]])
-    grp_transform.add_argument("--crop", metavar="{[W]x[H][%]}[+X][+Y]", help="crop image to 'WxH', at (optional) offset 'X,Y'")
-    grp_transform.add_argument("--gravity", choices=("center",*gravities), default="center", help="anchoring of crop operation")
+    grav = ["North","South","East","West"]; gravities = (*grav, *[''.join((P,S)) for P in grav[:2] for S in grav[2:]])
+    grp_transform.add_argument("--crop", type=ParsedCrop, metavar="{[W]x[H][%]}[+X][+Y]", help="crop image to 'WxH', at (optional) offset 'X,Y'")
+    grp_transform.add_argument("--gravity", choices=("Center",*gravities), default="Center", help="anchoring of crop operation")
     grp_transform.add_argument("--scale", nargs=1, dest="scales", action="extend", metavar="{int[%]|float[x]}")
     grp_transform.add_argument("--scales", nargs='+', action="extend", default=[], metavar="{int[%]|float[x]}", help=scale_help)
     
@@ -150,6 +150,11 @@ def ParseCmdline(arglist:list[str]|None = None, *, debug_mode=False, ignore_inpu
     rendertextgrp.add_argument("--rendertext", metavar="TEXT", help=rendertext_help)
     # only stores the '--text' value; even with 'nargs=*', it only consumes one arg
     # commandline args will get passed back and forth with the RenderText subparser instead
+    
+    # these arguments are defined here instead of in the subparser because they only affect compositing operations (no effect unless source-image is present)
+    rendertextgrp.add_argument("--text-offset", type=ParsedOffset, metavar="[+X][+Y]", help="Positive values always move towards the center (except for 'Center' gravity, where they move down+right)")
+    rendertextgrp.add_argument("--text-gravity", choices=("Center", *gravities), help="text anchoring")
+    
     
     # printing usage would not display these because they haven't been added yet
     patched_usage = f"{parser.format_usage()}\t\tIMAGE [DIRECTORY]\n"
@@ -304,6 +309,10 @@ def ParseCmdline(arglist:list[str]|None = None, *, debug_mode=False, ignore_inpu
     
     if (parsed_args.framecap is not None): ASSERT((parsed_args.framecap >= 0), "framecap must be positive");
     if (parsed_args.duration is not None): ASSERT((parsed_args.duration >= 0), "duration must be positive");
+    
+    if (parsed_args.rendertext is None):
+      if (parsed_args.text_gravity is not None): print("[WARNING]: '--text-gravity' will not have any effect ('--rendertext' was not specified)");
+      if (parsed_args.text_offset  is not None): print("[WARNING]: '--text-offset'  will not have any effect ('--rendertext' was not specified)");
     
     if debug_mode: print(""); # spacing after ASSERT-messages
     if (hasattr(parsed_args, "RenderTextInput")): # unsetting 'ignore_input_path' so that parsed_args is returned
