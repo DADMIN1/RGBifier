@@ -492,6 +492,7 @@ def SavePreprocessingCommands(workdir:pathlib.Path, expanded_commands:dict):
         "recolor_white": expanded_commands.get("$$srcimg_recolor_white$$", None),
         "recolor_black": expanded_commands.get("$$srcimg_recolor_black$$", None),
         "recolor_composite": expanded_commands.get("$$recolor_composite$$",None),
+        "renderedtext": expanded_commands.get("$$renderedtext$$", None),
         "text_overlay": expanded_commands.get("$$text_overlay$$", None),
         "edge": expanded_commands.get("$$srcimg_edge$$", None),
         "preprocessed": expanded_commands.get("$$srcimg_preprocessed$$", None),
@@ -588,7 +589,7 @@ def Main(identify_srcimg=False):
         SubCommand(f"{('gm convert -list resources' if (Globals.MAGICKLIBRARY=="GM") else 'identify -list resource')}", logname=None)
         SubCommand(f"{('gm ' if (Globals.MAGICKLIBRARY=="GM") else '')}identify -verbose {str(srcimg)}", logname=None)
     
-    additional_sources = []
+    rendertext_sources = []
     # text-rendering performed here if an image was given as input. otherwise,
     # if rendered-text is being used as input, it has already been generated
     if (args.rendertext is not None): # reset if RenderTextInput
@@ -600,7 +601,7 @@ def Main(identify_srcimg=False):
         mpc_text = rendertext_relocation_path.with_suffix('.mpc')
         conversion_command = f"{('gm ' if (Globals.MAGICKLIBRARY=="GM") else '')}convert '{rendertext_relocation_path}' 'MPC:{mpc_text}'"
         SubCommand(conversion_command, "text_rendering")
-        text_source = Task.ImageSourceT(mpc_text, 'renderedtext')
+        text_source = Task.TextOverlayT(mpc_text, 'renderedtext')
         text_source.image_format = 'MPC'
         
         # rescaling text to fit width
@@ -611,9 +612,13 @@ def Main(identify_srcimg=False):
             width_ratio = source.dimensions[0] / dimensions[0]
             rendertext_rescaled_path = mpc_text.with_name('renderedtext_rescaled')
             rescale_cmd = f"{('gm ' if (Globals.MAGICKLIBRARY=="GM") else '')}convert '{mpc_text}' -scale '{int(width_ratio*100)}%' '{rendertext_rescaled_path}'"
-            text_source = Task.ImageSourceT(rendertext_rescaled_path, 'renderedtext_rescaled'); text_source.image_format = 'MPC'
+            text_source = Task.TextOverlayT(rendertext_rescaled_path, 'renderedtext_rescaled'); text_source.image_format = 'MPC'
             SubCommand(rescale_cmd, logname="text_rendering")
-        additional_sources.append(text_source)
+        
+        text_source.offset = args.text_offset
+        text_source.gravity = args.text_gravity
+        rendertext_sources.append(text_source)
+    
     
     output_filename = f"{source.safe_filename}_RGB"
     print(f"output_filename: {output_filename}")
@@ -640,14 +645,14 @@ def Main(identify_srcimg=False):
         output_filename,
         output_directory,
         args.output_formats,
-        additional_sources,
+        rendertext_sources,
     )
     
     expected_outputs = Task.FillExpectedOutputs(task)
     print('\n'); assert(len(expected_outputs) > 0), "no expected outputs"
     
     enumrotations = RGB.EnumRotations(args.stepsize, frames_max)
-    if (args.stepwhite or args.stepblack or args.stepedge):
+    if (args.stepwhite or args.stepblack or args.stepedge or args.steptext):
         stepsize_deltas = CalcStepDeltas(args)
         task.stepsize_deltas = stepsize_deltas
         PrintDict(stepsize_deltas, "altsteps")

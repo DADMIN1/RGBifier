@@ -110,8 +110,10 @@ def ParseCmdline(arglist:list[str]|None = None, *, debug_mode=False, ignore_inpu
     
     group_stepszs.add_argument("--stepsize", type=float, default=1.00, metavar='(float)', help="modulation per frame - 1/200th of full cycle")
     group_stepszs.add_argument("--stepedge", type=float, metavar='(float)', help="override stepsize for edge-highlight")
+    group_stepszs.add_argument("--steptext", type=float, metavar='(float)', help="override stepsize for text-rendering")
     group_stepszs.add_argument("--stepwhite", type=float, metavar='(float)', help="override stepsize for white-recolor")
     group_stepszs.add_argument("--stepblack", type=float, metavar='(float)', help="override stepsize for black-recolor")
+    
     maxframesargs = group_stepszs.add_mutually_exclusive_group()
     maxframesargs.add_argument("--framecap", type=int, metavar='(int)', help="limit the number of frames in output")
     maxframesargs.add_argument("--duration", type=int, metavar='(int)', help="specifies number of frames in output")
@@ -154,7 +156,6 @@ def ParseCmdline(arglist:list[str]|None = None, *, debug_mode=False, ignore_inpu
     # these arguments are defined here instead of in the subparser because they only affect compositing operations (no effect unless source-image is present)
     rendertextgrp.add_argument("--text-offset", type=ParsedOffset, metavar="[+X][+Y]", help="Positive values always move towards the center (except for 'Center' gravity, where they move down+right)")
     rendertextgrp.add_argument("--text-gravity", choices=("Center", *gravities), help="text anchoring")
-    
     
     # printing usage would not display these because they haven't been added yet
     patched_usage = f"{parser.format_usage()}\t\tIMAGE [DIRECTORY]\n"
@@ -313,6 +314,7 @@ def ParseCmdline(arglist:list[str]|None = None, *, debug_mode=False, ignore_inpu
     if (parsed_args.rendertext is None):
       if (parsed_args.text_gravity is not None): print("[WARNING]: '--text-gravity' will not have any effect ('--rendertext' was not specified)");
       if (parsed_args.text_offset  is not None): print("[WARNING]: '--text-offset'  will not have any effect ('--rendertext' was not specified)");
+      if (parsed_args.steptext is not None): print("[WARNING]: '--steptext'  will not have any effect ('--rendertext' was not specified)")
     
     if debug_mode: print(""); # spacing after ASSERT-messages
     if (hasattr(parsed_args, "RenderTextInput")): # unsetting 'ignore_input_path' so that parsed_args is returned
@@ -400,8 +402,9 @@ def CalcDeltas(parsed_args:argparse.Namespace):
     stepsize_delta = {
         name: delta
         for (name, altstep) in zip(
-            ('edge','white','black'),
+            ('edge','text','white','black'),
             (parsed_args.stepedge,
+             parsed_args.steptext,
             parsed_args.stepwhite,
             parsed_args.stepblack)
         ) if (altstep is not None)

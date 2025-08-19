@@ -76,8 +76,10 @@ def BuildCommandline(P: TextRenderParams, output_directory=pathlib.Path("/tmp/RG
         filtered_line = FilterText(line.strip(), allow_symbols=True)
         # it would be better to accumulate these metrics inside 'CheckFontMetrics' all at once instead of feeding it line-by-line here
         metrics_dict = CheckFontMetrics(filtered_line, fontpath, pointsize, spacingK, spacingW, spacingL)
-        (lwidth, lheight, lYoffset) = (metrics_dict["width"], metrics_dict["height"], metrics_dict["ascent"])
-        width = max(int(width), int(lwidth)); height += int(lheight); Yoffset = lYoffset;
+        (lwidth, lheight, lYoffset) = map (
+            lambda N: int(float(N)), ( # python does not allow direct conversion from float literal (string) to int
+              metrics_dict["width"], metrics_dict["height"], metrics_dict["ascent"]
+        )); width = max(width, lwidth); height += lheight; Yoffset = lYoffset;
         filtered_lines.append(filtered_line.strip())
     filtered_text = '\n'.join(filtered_lines)
     if spacingL is not None: # font-metrics don't account for line-spacing, apparently

@@ -54,6 +54,20 @@ class ImageSourceT():
     
 
 
+class TextOverlayT(ImageSourceT):
+    def __init__(self, srcpath: pathlib.Path, safe_filename: str):
+      super().__init__(srcpath, safe_filename)
+      self.offset = None
+      self.gravity = None
+    
+    def ComposeString(self, method="Over"):
+      compose_string = f"-compose {method}"
+      if (self.gravity is not None): compose_string += f" -gravity {self.gravity}";
+      if (self.offset is not None): compose_string += f" -geometry {self.offset[1]}";
+      # offset[1] is the formatted string; [0] is the integer-tuple
+      return compose_string
+
+
 class TaskT():
   def __init__(self,
         workdir:pathlib.Path,
@@ -66,7 +80,7 @@ class TaskT():
         output_filename:str,
         output_directory:pathlib.Path,
         output_fileformats:list[str],
-        additional_sources:list[ImageSourceT],
+        rendertext_sources:list[TextOverlayT],
     ):
     self.working_path = workdir
     self.image_source = img_src
@@ -75,7 +89,7 @@ class TaskT():
     self.output_filename = output_filename
     self.output_directory = output_directory
     self.output_fileformats = output_fileformats
-    self.additional_sources = additional_sources
+    self.rendertext_sources = rendertext_sources
     
     self.crop = BuildCropCommand(crop, grav)
     self.rescales = (rescales if(rescales is not None) else ['100%'])
@@ -88,7 +102,7 @@ class TaskT():
       self.edgeRadius,
     ) = color_options.values()
     
-    self.stepsize_deltas = {} # edge, white, black
+    self.stepsize_deltas = {} # edge, text, white, black
     self.delay = 5 # controlling GIF framerate (see RGB.argstr_GIF)
     # default value for both magick-libraries is (equivalent to) 10
     
@@ -258,7 +272,7 @@ def ImagePreprocess(task:TaskT, intermediate_format=None):
         return
     
     def ApplyModulation(key, source:ImageSourceT):
-        assert(key in ('edge','white','black')), f"invalid stepsize-lookup: {key}";
+        assert(key in ('edge','text','white','black')), f"invalid stepsize-lookup: {key}";
         if (key not in task.stepsize_deltas): return source;
         modulations = RGB.EnumRotations(task.stepsize_deltas[key], task.image_source.frame_count)
         new_filename = f"{source.safe_filename}_modulation"
@@ -325,18 +339,21 @@ def ImagePreprocess(task:TaskT, intermediate_format=None):
     
     
     TEXT_LAYERED_ABOVE = True
-    for renderedText in task.additional_sources:
+    for renderedText in task.rendertext_sources:
         magic_map[renderedText.magic] = renderedText # no entry exists because it wasn't created as a sink
+        expanded_commands[renderedText.magic]=list() # this also needs to be added manually
+        compose_string = renderedText.ComposeString("Over")
+        renderedText = ApplyModulation('text',renderedText)
         text_overlay = CreateSink("text_overlay", sources=[renderedText, current_img])
+        
         if TEXT_LAYERED_ABOVE:
-            QueueTransform(f"composite {renderedText.magic} {current_img.magic} -compose Over", sources=[renderedText, current_img])
+            QueueTransform(f"composite {renderedText.magic} {current_img.magic} {compose_string}", sources=[renderedText, current_img])
         else: # text is layered beneath the image instead of above (source-image must have transparent background)
-            QueueTransform(f"composite {current_img.magic} {renderedText.magic} -compose Over", sources=[renderedText, current_img])
-            QueueTransform(f"composite {text_overlay.magic} {current_img.magic} -compose Over", sources=[text_overlay, current_img])
+            QueueTransform(f"composite {current_img.magic} {renderedText.magic} {compose_string}", sources=[renderedText, current_img])
+            QueueTransform(f"composite {text_overlay.magic} {current_img.magic} {compose_string}", sources=[text_overlay, current_img])
         baseimg = text_overlay; current_img = baseimg;
     
     #TODO: steptext
-    #TODO: auto-adjust width (currently just clips when wider than source)
     #TODO: still not avoiding a redundant composite when edge-detection is disabled
     
     if task.edge_color is not None:
