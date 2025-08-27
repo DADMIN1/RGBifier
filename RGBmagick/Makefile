@@ -3,8 +3,8 @@ MAKEFLAGS += --warn-undefined-variables --no-implicit-rules --no-builtin-rules -
 # compiler version: GCC13
 
 CXXFLAGS := -std=c++23 -fdiagnostics-color=always
-#CXXFLAGS += -march=native -mtune=native
-LDFLAGS := -lMagick++-6.Q16
+CXXFLAGS += -march=native -mtune=native -O3
+LDFLAGS := -lMagickCore-6.Q16 -lMagick++-6.Q16
 WARNFLAGS := -Wall -Wextra -Wpedantic -fmax-errors=1
 
 # INCLUDEFLAGS := -isystem /usr/include/ImageMagick-6/ -isystem /usr/include/x86_64-linux-gnu/ImageMagick-6/
