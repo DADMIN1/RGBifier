@@ -1,4 +1,5 @@
 #include <iostream>
+#include <format>
 #include <Magick++.h>
 
 
@@ -16,6 +17,15 @@ int EpicFunction(int argc, const char* argv[]) {
 	}
 	return 69;
 }
+
+const char* GetImageSize(const char imagepath[]) {
+	static std::string _ImageSizeString{"[0x0]"};
+	try { Magick::Image testimage(imagepath);
+		_ImageSizeString = std::format("[{}x{}]", testimage.columns(), testimage.rows());
+	} catch (Magick::ErrorBlob& error){ _ImageSizeString = std::format("[ERROR] {}", error.what());}
+	return _ImageSizeString.c_str();
+}
+
 }// extern "C"
 
 
@@ -55,6 +65,7 @@ int main(int argc, const char* argv[])
 	std::cout << "testimages/peach.png\n";
 	Magick::Image testimage("testimages/peach.png");
 	std::cout << testimage.magick() << '\n'; // PNG
+	std::cout << GetImageSize("testimages/peach.png") << '\n';
 	std::cout << '[' << testimage.columns() << 'x' << testimage.rows() << "]\n";
 	std::cout << std::endl;
 	return 0;
