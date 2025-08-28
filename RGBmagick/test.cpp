@@ -32,9 +32,8 @@ const char* GetImageSize(const char imagepath[]) {
 
 }// extern "C"
 
-// TODO: prevent ImageMagick from writing temp/cache files to the current directory!!!
 
-// Magick::readImages doesn't accept format-specifiers ("frame%03d.png"); it must be loaded manually
+// Magick::readImages doesn't accept format-specifiers ("frame%03d.png"); image sequences must be loaded manually
 std::vector<Magick::Image> LoadImageDirectory(std::string directory) {
 	std::vector<Magick::Image> imageList{}; imageList.reserve(1000);
 	// this iterates the files in REVERSE order
@@ -42,26 +41,42 @@ std::vector<Magick::Image> LoadImageDirectory(std::string directory) {
 		std::filesystem::directory_iterator{directory}) {
 		imageList.push_back(Magick::Image(file.path()));
 	}
-	std::cout << std::format("{} loaded: {} images", directory, imageList.size()) << '\n';
+	std::cout << std::format("loaded '{}' [{} images]", directory, imageList.size()) << '\n';
 	return imageList;
 }
+// TODO: need to filter out the '.cache' files when loading MPC-frames
+// if (file.path().extension() == ".mpc")
 
-Magick::Image ImageGrid(int stack_count, std::vector<Magick::Image>& imageList) {
-	std::vector<Magick::Image> stacks{}; stacks.reserve(10);
-	try {
-		for(auto iter {imageList.rbegin()}; iter < imageList.rend();) {
-			std::cout << "next stack: " << iter->fileName() << '\n';
-			Magick::Image& stacked{stacks.emplace_back()};
-			Magick::appendImages(&stacked, iter, iter+stack_count, true); // vertical
-			iter += stack_count;
-		}
-	} catch (Magick::Exception &error) { std::cout << "error: " << error.what() << '\n'; }
+void ImageGrid(std::vector<Magick::Image>& imagelist, int stacklength, bool vert)
+{
+	std::vector<Magick::Image> stacks{}; stacks.reserve(25);
+	// segfaults if framestacks aren't all the same length
+	if ((imagelist.size() % stacklength) != 0) {
+		std::cout << std::format(
+			"[WARNING] imagelist[{}] is not divisible by stacksize: {}[+{}]",
+			imagelist.size(), stacklength, (imagelist.size() % stacklength)
+		) << '\n';
+		for (auto rem{(imagelist.size() % stacklength)}; rem > 0; --rem)
+			imagelist.pop_back(); // resize until evenly divisible
+		std::cout << "new length: " << imagelist.size() << '\n';
+	}
+	
+	for(auto iter {imagelist.rbegin()}; iter < imagelist.rend();) {
+	/*	std::cout << "next stack: " << iter->fileName() << '\n'; */
+		Magick::Image& stacked{stacks.emplace_back()};
+		Magick::appendImages(&stacked, iter, iter+stacklength, vert); // vertical
+		stacked.scale("25%"); // TODO: configurable. also encode in filename
+		iter += stacklength;
+	}
 	
 	Magick::Image framegrid{};
-	Magick::appendImages(&framegrid, stacks.begin(), stacks.end(), false); // horizontal
-	std::cout << std::format("stacks: {}x{}", stacks.size(), stack_count) << '\n';
-	std::cout << "final size: " << std::format("[{}x{}]", framegrid.columns(), framegrid.rows()) << '\n';
-	return framegrid;
+	Magick::appendImages(&framegrid, stacks.begin(), stacks.end(), !vert); // horizontal
+	std::cout << std::format("grid: [{}x{}]", stacks.size(), stacklength);
+	std::cout << std::format("({}x{})", framegrid.columns(), framegrid.rows()) << '\n';
+	std::string filename = std::format("image_grid_{}_{}_[{}x{}].png",
+		(vert?'v':'h'), imagelist.size(), stacks.size(), stacklength);
+	framegrid.write("PNG:/tmp/RGB_TOPLEVEL/output/"+filename);
+	return;
 }
 
 
@@ -93,6 +108,16 @@ int main(int argc, const char* argv[])
 		std::cout << argv[C] << '\n';
 	}
 	
+	// ImageMagick will write temp/cache files to the current directory if TEMP_IM doesn't exist
+	std::vector<std::filesystem::directory_entry> tempdirs {
+		std::filesystem::directory_entry{"/tmp/RGB_TOPLEVEL/TEMP_IM/"},
+		std::filesystem::directory_entry{"/tmp/RGB_TOPLEVEL/TEMP_GM/"},
+		std::filesystem::directory_entry{"/tmp/RGB_TOPLEVEL/inputs/"},
+		std::filesystem::directory_entry{"/tmp/RGB_TOPLEVEL/output/"},
+	}; for (const std::filesystem::directory_entry& path: tempdirs) {
+		if (!path.exists()) std::filesystem::create_directory(path);
+	}
+	
 	std::cout << '\n';
 	PythonPlz(L"Plz Print This WideString Plz C++");
 	EpicFunction(argc, argv);
@@ -105,9 +130,14 @@ int main(int argc, const char* argv[])
 	std::cout << '[' << testimage.columns() << 'x' << testimage.rows() << "]\n";
 	std::cout << std::endl;
 	
-	std::vector<Magick::Image> imageList = LoadImageDirectory("/tmp/RGB_TOPLEVEL/frames/");
-	Magick::Image framegrid = ImageGrid(10, imageList);
-	framegrid.write("/tmp/RGB_TOPLEVEL/output/frame_grid.png");
+	std::vector<Magick::Image> imagelist = LoadImageDirectory("/tmp/RGB_TOPLEVEL/inputs/");
+	// good divisors for length 100
+	ImageGrid(imagelist,  4, true);
+	ImageGrid(imagelist,  5, true);
+	ImageGrid(imagelist, 10, true);
+	ImageGrid(imagelist, 20, true);
+	ImageGrid(imagelist, 25, true);
+	
 	return 0;
 }
 
