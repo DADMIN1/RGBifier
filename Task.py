@@ -434,7 +434,7 @@ def GenerateFrames(task:TaskT, enumRotations:list[tuple[str,str]]) -> tuple[list
     
     if (task.ffprobe_info is None):
         index_len = task.image_source.indexlength # number of digits to use in printf sequence
-        framerate = 30
+        framerate = 60
         audio_src = None
     else:
         index_len = task.ffprobe_info['index_length']

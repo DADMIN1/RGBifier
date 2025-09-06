@@ -45,8 +45,8 @@ def EstimateSteps(stepsize:float):
     framecount = abs(int(200/stepsize)) # 200/0.1 == 2000; but 200//0.1 == 1999 (WTF python?)
     index_length = 1+int(log10(framecount-1)) # length of digit-strings in numbered filenames
     # this calculation: ^ assumes incremental numbering starting at ZERO! (indexing from 1 would not subtract)
-    #if((200 % stepsize) != 0.0): ... <-- fails due to float-imprecision; gives nonzero for perfect divisors
-    if ((framecount*stepsize) != 200): framecount += 1; # off-by-one when stepsize is not a perfect divisor of 200
+    #if((200 % stepsize) != 0.0): ... <-- fails due to float-imprecision - gives nonzero for perfect divisors
+    if (abs(framecount*stepsize) != 200): framecount += 1; # off-by-one when stepsize is not perfect divisor of 200
     return (framecount, index_length)
 
 def HueRotations(stepsize:float) -> list[str]:

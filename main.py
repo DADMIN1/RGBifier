@@ -538,6 +538,7 @@ def Main(identify_srcimg=False):
     else: image_md5sum = subprocess.check_output(["md5sum", str(args.image_path)]);
     checksum = str(image_md5sum, encoding="utf-8").split()[0]
     assert(len(checksum) == 32), "MD5-hash did not match expected length"
+    checksum = checksum[:8] # truncate for better readablity
     
     (workdir, wasNewlyCreated) = CreateTempdir(checksum, autodelete=args.autodelete, use_tmpfs=args.use_tmpfs)
     if (workdir is None): print(f"no workdir. exiting"); exit(2); # tmpfs mount attempted and failed
