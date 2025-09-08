@@ -19,7 +19,15 @@ int EpicFunction(int argc, const char* argv[]) {
 		std::cout << "  [EpicFunction]: ";
 		std::cout << C << ": " << argv[C] << '\n';
 	}
-	return 69;
+	return 420;
+}
+
+// TODO: integrate into FFI.py
+std::vector<Magick::Image> LoadImages(int argc, const char* argv[]) {
+	std::vector<Magick::Image> imageList{}; imageList.reserve(1000);
+	try { for (int C{0}; C < argc; ++C) { imageList.push_back(Magick::Image(argv[C])); }}
+	catch (Magick::Exception& error) { std::cout << "[ERROR]" << error.what() << '\n'; }
+	return imageList;
 }
 
 const char* GetImageSize(const char imagepath[]) {
@@ -35,11 +43,13 @@ const char* GetImageSize(const char imagepath[]) {
 
 // Magick::readImages doesn't accept format-specifiers ("frame%03d.png"); image sequences must be loaded manually
 std::vector<Magick::Image> LoadImageDirectory(std::string directory) {
-	std::vector<Magick::Image> imageList{}; imageList.reserve(1000);
-	// this iterates the files in REVERSE order
+	std::vector<Magick::Image> imageList{}; imageList.reserve(360);
+	// this iterates the directory in REVERSE order!?
 	for(std::filesystem::directory_entry const& file: 
 		std::filesystem::directory_iterator{directory}) {
-		imageList.push_back(Magick::Image(file.path()));
+		Magick::Image& newimg{imageList.emplace_back(file.path())}; newimg.trim( );
+		std::string info = std::format("[{}x{}]", newimg.columns(), newimg.rows());
+		std::cout << "loading: " << file.path().filename() << ": " << info << '\n'; // TODO: debug toggle
 	}
 	std::cout << std::format("loaded '{}' [{} images]", directory, imageList.size()) << '\n';
 	return imageList;
@@ -47,9 +57,9 @@ std::vector<Magick::Image> LoadImageDirectory(std::string directory) {
 // TODO: need to filter out the '.cache' files when loading MPC-frames
 // if (file.path().extension() == ".mpc")
 
-void ImageGrid(std::vector<Magick::Image>& imagelist, int stacklength, bool vert)
-{
-	std::vector<Magick::Image> stacks{}; stacks.reserve(25);
+void ImageGrid(std::vector<Magick::Image>& imagelist, int stacklength, bool vert, std::string pfixstr)
+{   // vertical image ordering stacks columns first, each stacklength-tall, then combines horizontally
+	std::vector<Magick::Image> stacks{}; stacks.reserve(64);
 	// segfaults if framestacks aren't all the same length
 	if ((imagelist.size() % stacklength) != 0) {
 		std::cout << std::format(
@@ -65,17 +75,23 @@ void ImageGrid(std::vector<Magick::Image>& imagelist, int stacklength, bool vert
 	/*	std::cout << "next stack: " << iter->fileName() << '\n'; */
 		Magick::Image& stacked{stacks.emplace_back()};
 		Magick::appendImages(&stacked, iter, iter+stacklength, vert); // vertical
-		stacked.scale("25%"); // TODO: configurable. also encode in filename
+		//stacked.scale("5%"); // TODO: parameter. also should encode in filename
 		iter += stacklength;
 	}
 	
 	Magick::Image framegrid{};
+	const auto stacksz_rows = (vert? stacklength : stacks.size());
+	const auto stacksz_cols = (vert? stacks.size() : stacklength);
 	Magick::appendImages(&framegrid, stacks.begin(), stacks.end(), !vert); // horizontal
-	std::cout << std::format("grid: [{}x{}]", stacks.size(), stacklength);
-	std::cout << std::format("({}x{})", framegrid.columns(), framegrid.rows()) << '\n';
-	std::string filename = std::format("image_grid_{}_{}_[{}x{}].png",
-		(vert?'v':'h'), imagelist.size(), stacks.size(), stacklength);
-	framegrid.write("PNG:/tmp/RGB_TOPLEVEL/output/"+filename);
+	framegrid.repage(); // updating pagesize to new image geometry; extremely important!
+	
+	std::string filename = std::format("_{}{}_image_grid_[{}x{}].png",
+		(vert?'V':'H'), imagelist.size(), stacksz_cols, stacksz_rows);
+	std::string outpath{"/tmp/RGB_TOPLEVEL/output/"+pfixstr+filename};
+	std::cout << std::format("{}_grid[{}x{}]({}x{} pixels): {}\n",((vert)? 'V':'H'),
+		stacksz_cols, stacksz_rows, framegrid.columns(), framegrid.rows(), outpath);
+	
+	framegrid.write("PNG:"+outpath);
 	return;
 }
 
@@ -130,14 +146,33 @@ int main(int argc, const char* argv[])
 	std::cout << '[' << testimage.columns() << 'x' << testimage.rows() << "]\n";
 	std::cout << std::endl;
 	
-	std::vector<Magick::Image> imagelist = LoadImageDirectory("/tmp/RGB_TOPLEVEL/inputs/");
-	// good divisors for length 100
-	ImageGrid(imagelist,  4, true);
-	ImageGrid(imagelist,  5, true);
-	ImageGrid(imagelist, 10, true);
-	ImageGrid(imagelist, 20, true);
-	ImageGrid(imagelist, 25, true);
+	// ImageGrid inputs
+	std::string name{"peach"};
+	std::string input_path{"/tmp/RGB_TOPLEVEL/png_frames_200"};
+	int tile_width{420}; int tile_height{640}; // dimensions of the input-image
+	std::string prefix = std::format("{}[{}x{}]", name, tile_width, tile_height);
 	
+	std::vector<Magick::Image> imagelist; imagelist.reserve(360);
+	try { imagelist = LoadImageDirectory(input_path); }
+	catch (Magick::Error& failed) {
+		std::cout << "[ERROR] LoadImageDirectory: " << failed.what() << '\n';
+		return 1;
+	}
+	
+	for (bool vert: {false, true})
+	{
+		try { // TODO: generate symmetric divisors!
+			ImageGrid(imagelist,  4, vert, prefix);
+			ImageGrid(imagelist,  5, vert, prefix);
+			ImageGrid(imagelist,  8, vert, prefix); // 200-frames only 
+			ImageGrid(imagelist, 10, vert, prefix);
+			ImageGrid(imagelist, 20, vert, prefix);
+			ImageGrid(imagelist, 25, vert, prefix);
+		} catch (Magick::Error& failed) {
+			std::cout << "[ERROR] ImageGrid: " << failed.what() << '\n';
+			return 2;
+		}
+	}
 	return 0;
 }
 

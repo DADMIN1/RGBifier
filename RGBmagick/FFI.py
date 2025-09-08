@@ -1,4 +1,5 @@
 from ctypes import *
+from _ctypes import CFuncPtr # type-hint
 import pathlib
 
 library_path = pathlib.Path(__file__).parent / "libRGBmagick.so"
@@ -14,19 +15,19 @@ print(f"rgblib:{rgblib}\n{vars(rgblib)}\n")
 def ASCIIenc(PS: str): return bytes(PS,encoding="UTF-8"); # Python to C-string
 def ASCIIdec(B:bytes): return B.decode(encoding="UTF-8"); # C-string to Python
 
-# This works but IDE doesn't recognize ctypes.ARRAY
-from ctypes import ARRAY
+# IDE doesn't recognize ctypes.ARRAY
+def ARRAY(c_type,_len): return (c_type*_len);
+
 # CharPointerPointer_T = POINTER(c_char_p) # char** / char*[]
 # stringarr_pointers = ArrayFromList(c_char_p, stringarr)
-def ArrayFromList(c_type, python_list:list):
+def ArrayFromList(c_type, python_list:list) -> Array:
   # return ARRAY(c_type, arr_length)(*[c_type(ss) for ss in python_list])
   return ARRAY(c_type, len(python_list))(*[cast(ss, c_type) for ss in python_list])
   # return ARRAY(POINTER(c_type),arr_length)(*[cast(ss, POINTER(c_type)) for ss in python_list])
 
 
 # prints function info on call (when set as the 'errcheck' callback)
-def ReturnHook(result, func, args:tuple):
-  """ :type func: cdll._FuncPtr """
+def ReturnHook(result, func:CFuncPtr, args:tuple):
   print(f"function: {func.__name__}({', '.join(CT.__name__ for CT in func.argtypes)})")
   print(f"  params: {[(type(CT).__name__, CT) for CT in args]}")
   print(f"  result: {result}\r\n")
