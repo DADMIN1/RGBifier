@@ -235,9 +235,11 @@ def argstr_GIF(delay:int) -> tuple[str,str]:
     
     # delay must be specified BEFORE INPUT when using ImageMagick
     isIM = (Globals.MAGICKLIBRARY == "IM")
-    # '-delay 0' seems equivalent to not specifying delay, although the checksums are different
-    use_delay = ((delay > 0) and (delay != 10)) # the default speed is equivalent to '-delay 10'
+    # '-delay 0' produces results identical to delay:10, except the output does not have any 'Delay' value encoded
+    use_delay = ((delay > 0) and (delay != 5)) # leaving value unspecified produces results identical to 'delay:5'
     delay_arg = (f"-delay {delay}" if use_delay else ' ')
+    # in the first case (delay 0/10), the checksums will not match, because only ten has a 'Delay' value encoded.
+    # in the second case (unspecified / delay:5), both will produce outputs with a 'Delay' value of five encoded.
     
     disposing = "-dispose None" # {None | Undefined | Background | Previous} (default: 'Undefined')
     useDither = False; dithering = ' ' if useDither else "+dither" # '+dither' disables dithering

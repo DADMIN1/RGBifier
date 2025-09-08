@@ -4,7 +4,7 @@ import subprocess
 import os
 import json
 
-from collections import Counter
+from collections import Counter, defaultdict
 from datetime import datetime
 
 from CLI import (FilterText, PrintDict, ParseCmdline, ResolveOutputPath)
@@ -176,6 +176,7 @@ def CreateTempdir(checksum:str, autodelete=True, use_tmpfs=False) -> tuple[pathl
         
         # for debug/testing; ensuring mtime has nonzero 'day'
         # mtime_delta_tomorrow = (datetime.today().replace(day=(datetime.today().day+1)) - tmpdir_mtime)
+        # mtime_delta = mtime_delta_tomorrow
         
         mtime_delta = (datetime.now() - tmpdir_mtime)
         (days, sec) = (mtime_delta.days, mtime_delta.seconds)
@@ -184,7 +185,8 @@ def CreateTempdir(checksum:str, autodelete=True, use_tmpfs=False) -> tuple[pathl
         # ignore any 'unused' warnings related to these variables; 
         # they're referenced by 'eval' in 'MaybePlural()' below
         
-        def MaybePlural(S:str,localz=locals()) -> str:
+        localz = locals()
+        def MaybePlural(S:str) -> str:
             if ((N := eval(S, localz)) == 0): return "";
             return f"{N} {S if (N>1) else S.removesuffix('s')}"
         
@@ -275,19 +277,18 @@ def RotateMagickLogs(toplevel:pathlib.Path, keep_limit:int, verbose=False) -> pa
     return new_logdir
 
 
-def QueryImageSize(source: pathlib.Path) -> (int, int):
+def QueryImageSize(source: pathlib.Path) -> tuple[int, int]:
     command_string = "gm identify -ping "
     completed = subprocess.run([*command_string.split(), f'{source}'], check=True, capture_output=True, encoding="utf-8")
     # 'testimages/test.png PNG 900x900+0+0 DirectClass 8-bit 267.5Ki 0.000u 0m:0.000000s' <-- example firstline
     firstline = completed.stdout.splitlines()[0]
     imageinfo = firstline.removeprefix(str(source)).strip().split()
     imagesize = [*map(int,imageinfo[1].removesuffix('+0+0').split('x'))]
-    return imagesize
+    assert(len(imagesize) == 2), "expected imagesize to be integer pair";
+    return (imagesize[0], imagesize[1])
 
-# noinspection PyUnresolvedReferences
-# ^ every lookup on video_stream/audio_stream (video_stream['nb_frames'])
-# triggers this BS warning: "Cannot find reference '[' in 'None'"
-def MakeImageSources(workdir:pathlib.Path, input_file:pathlib.Path, max_frames:int|None=None) -> (Task.ImageSourceT, pathlib.Path, dict|None):
+
+def MakeImageSources(workdir:pathlib.Path, input_file:pathlib.Path, max_frames:int|None=None) -> tuple[Task.ImageSourceT, pathlib.Path, dict|None]:
     """
     :param workdir: temp subdirectory for image-processing
     :param input_file: image being RGBified; copied to workdir
@@ -331,16 +332,14 @@ def MakeImageSources(workdir:pathlib.Path, input_file:pathlib.Path, max_frames:i
         print(f"{'_'*120}\n")
         
         with ffprobe_path.open(mode='w', encoding='utf-8') as ffprobe_file:
-            # noinspection PyTypeChecker
             json.dump(ffprobe_info, ffprobe_file, indent=2)
-            # opening files always triggers a BS warning:
-            # 'Expected type 'SupportsWrite[str]', got 'TextIO' instead'
         
         stream_info = { stream["codec_type"]:stream for stream in ffprobe_info["streams"] }
-        if ((video_stream := stream_info.get('video', None)) is None):
+        if ('video' not in stream_info.keys()):
             print("[ERROR] no video stream found!!")
             print(json.dumps(stream_info, indent=2))
-            print("exiting...\n"); exit(4)
+            print("exiting...\n"); exit(4);
+        video_stream = stream_info['video']
         
         framecount = (int(video_stream['nb_frames']))
         index_length = 1+int(RGB.log10(framecount-1)) # length of digit-strings in numbered filenames
@@ -382,7 +381,8 @@ def MakeImageSources(workdir:pathlib.Path, input_file:pathlib.Path, max_frames:i
         if ((max_frames is not None) and ((max_frames >= framecount) or (max_frames < 0))): max_frames = None;
         print(f"frame-count: {framecount} {f'(limited to {max_frames})' if (max_frames is not None) else ''}")
         
-        if ((audio_stream := stream_info.get('audio', None)) is not None):
+        if 'audio' in stream_info.keys():
+            audio_stream = stream_info['audio'];
             print(f"\n[AUDIO INFO] {safe_filename}.{og_suffix} [{(acodec_suffix := audio_stream['codec_name']).upper()}]")
             print("acodec: {}/{} [{}]".format(*[audio_stream[f"codec_{K}"] for K in ('name', 'tag_string', 'long_name')]))
             print(f"{audio_stream['channels']}-channel {audio_stream['channel_layout']} @{audio_stream['sample_rate']}Hz")
@@ -487,43 +487,48 @@ def SubCommand(cmdline:list[str]|str, logname:str|None = "main", isCmdSequence:b
 
 
 def SavePreprocessingCommands(workdir:pathlib.Path, expanded_commands:dict):
-    better_names = {
-        "baseimg_primary_format": expanded_commands.get("$$baseimg_primary_format$$", None),
-        "recolor_white": expanded_commands.get("$$srcimg_recolor_white$$", None),
-        "recolor_black": expanded_commands.get("$$srcimg_recolor_black$$", None),
-        "recolor_composite": expanded_commands.get("$$recolor_composite$$",None),
-        "renderedtext": expanded_commands.get("$$renderedtext$$", None),
-        "text_overlay": expanded_commands.get("$$text_overlay$$", None),
-        "edge": expanded_commands.get("$$srcimg_edge$$", None),
-        "preprocessed": expanded_commands.get("$$srcimg_preprocessed$$", None),
-        "final": expanded_commands.get("$$srcimg$$", None),
-    }
-    print(f"keys: {expanded_commands.keys()}")
+    print(f"expanded_command_keys: {expanded_commands.keys()}")
+    preprocessing_pipeline = defaultdict(list)
+    for K in (preprocessing_steps := [
+        "baseimg_primary_format",
+        "recolor_white",
+        "recolor_black",
+        "recolor_composite",
+        "renderedtext",
+        "text_overlay",
+        "edge",
+        "preprocessed",
+        "final",
+    ]): preprocessing_pipeline[K]=list();
     
-    # searching for scaled entries
-    for magic in expanded_commands.keys():
-        if 'srcimg_scale' in magic:
-            scaletxt = magic.strip('$').removeprefix('srcimg_')
-            better_names[scaletxt] = expanded_commands[magic]
-        elif '_modulation' in magic:
-            base_txt = magic.strip('$').removesuffix('_modulation').removeprefix('srcimg_')
-            better_names[base_txt].extend(expanded_commands[magic])
-            # very important to extend the pre-existing entry; to preserve overall correct order
-        else: continue;
+    for (magic, expanded_cmd) in expanded_commands.items():
+        magic = ("final" if (magic=="$$srcimg$$") else magic.strip('$$'));
+        magic = magic.removeprefix('srcimg_').removesuffix("_modulation");
+        if (magic == "opacity_mask"): continue; # transform_hooks got this
+        if (magic not in preprocessing_steps): # no exact matches
+            for step in preprocessing_steps: # fallback to prefix
+                if (magic.startswith(step)): magic = step; break;
+        assert(len(magic)>0),"EXPANDED_KEY SHOULD NOT BE EMPTY!";
+        
+        assert(magic in preprocessing_steps),f"EXPANDED_KEY [{magic}] IS NOT IN THE PIPELINE!";
+        if (isinstance(expanded_cmd, str)): preprocessing_pipeline[magic].append(expanded_cmd);
+        elif isinstance(expanded_cmd,list): preprocessing_pipeline[magic].extend(expanded_cmd);
+        else: assert(False),f"[EXPANDED_TYPE_UNKNOWN] {expanded_cmd}:{expanded_cmd.__class__()}";
+    # PrintDict(preprocessing_pipeline, "[PREPROCESSING_PIPELINE]") # unreasonable amount of spam
     
+    batch_files = []
     batchdir = workdir/"batchfile"
     batchdir.mkdir(exist_ok=True)
-    batch_files = []
-    for (title, commandlist) in better_names.items():
-        if commandlist is None: continue;
+    for (title, commandlist) in preprocessing_pipeline.items():
+        if (len(commandlist) == 0): continue;
         filepath = batchdir/title
         print(f"writing commands to: batchfile/{filepath.name}")
         with filepath.open(mode='w', encoding='utf-8') as newfile:
-            newfile.write('\n'.join(commandlist)); newfile.write('\n\n')
-        batch_files.append(filepath)
+            newfile.write('\n'.join(commandlist)); newfile.write('\n');
+        if not (filepath in batch_files): batch_files.append(filepath);
     print(f"finished writing all batchfiles!\n")
     batch_commands = [f"gm batch -echo on -stop-on-error on '{batchfile}'" for batchfile in batch_files]
-    print('\n'.join(batch_commands)); print('\n')
+    print('\n'.join(batch_commands)); print('\n');
     return batch_commands
 
 
@@ -663,8 +668,8 @@ def Main(identify_srcimg=False):
     if (Globals.MAGICKLIBRARY == "GM"):
         print("INITIAL PREPROCESSING")
         expanded_commands = Task.ImagePreprocess(task)
-        preprocess_batch_commands = SavePreprocessingCommands(workdir, expanded_commands); Globals.Break("PRINT_ONLY")
-        SubCommand(preprocess_batch_commands, "manual_preprocessing", isCmdSequence=True); print(f"{'_'*120}\n")
+        preprocess_batch_commands = SavePreprocessingCommands(workdir, expanded_commands); Globals.Break("PRINT_ONLY");
+        SubCommand(preprocess_batch_commands, "manual_preprocessing", isCmdSequence=True); print(f"{'_'*120}\n");
     
     print("PREPARING FRAME GENERATION")
     # command_names = ("preprocessing", "frame_generation", "rendering")

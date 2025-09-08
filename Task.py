@@ -103,8 +103,11 @@ class TaskT():
     ) = color_options.values()
     
     self.stepsize_deltas = {} # edge, text, white, black
-    self.delay = 5 # controlling GIF framerate (see RGB.argstr_GIF)
-    # default value for both magick-libraries is (equivalent to) 10
+    self.delay = 5 # set GIF framerate (see RGB.argstr_GIF)
+    # if unspecified both magick-libraries use a value of 5
+    # must be positive; zero is (equivalent to) delay of 10
+    # ImageMagick requires the -delay option BEFORE input!!
+    # GIFs using lower delay values consume an unreasonable amount of CPU during playback!
     
     self.frame_formats = [ primary_format, ]
     if (('APNG' in output_fileformats) or ('MP4' in output_fileformats)): self.frame_formats.append('PNG');
@@ -293,6 +296,10 @@ def ImagePreprocess(task:TaskT, intermediate_format=None):
             )
         ]
         
+        # ensuring that source is ordered before this sink (batchfile execution order matches key order)
+        if (source.magic not in expanded_commands):
+            expanded_commands[source.magic]=list();
+        
         nonlocal newest_sink; newest_sink = modsink;
         magic_map[modsink.magic] = modsink
         expanded_commands[modsink.magic] = modulate_commands
@@ -445,7 +452,10 @@ def GenerateFrames(task:TaskT, enumRotations:list[tuple[str,str]]) -> tuple[list
     preprocess_commands = []
     if (not task.did_preprocess_img): # don't duplicate preprocessing
         expanded_commands = ImagePreprocess(task) # TODO: need to update global SRCIMG?
-        preprocess_commands = task.preprocessing_cmds
+        for magic in ["$$renderedtext_modulation$$", "$$renderedtext_rescaled_modulation$$"]:
+            if (magic in expanded_commands): preprocess_commands.extend(expanded_commands[magic]);
+        # Task refuses to sequence the rendertext modulation with '--magick=IM', for some reason
+        preprocess_commands.extend(task.preprocessing_cmds)
     
     framegen_commands = []
     frame_conversions = [] # commands filling derivative directories (png_frames)
