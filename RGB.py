@@ -49,14 +49,16 @@ def EstimateSteps(stepsize:float):
     if (abs(framecount*stepsize) != 200): framecount += 1; # off-by-one when stepsize is not perfect divisor of 200
     return (framecount, index_length)
 
-def HueRotations(stepsize:float) -> list[str]:
+def HueRotations(stepsize:float, useHSB = False) -> list[str]:
     """ produces rotations for a given stepsize
     :param stepsize: hue-rotation per frame.
+    :param useHSB: rotate in HSB colorspace instead
     :return: list of floating-point numbers as strings (formatted/padded to uniform length)
     """
     estPrecision = DecimalCount(stepsize) # digits after the decimal in stepsize
     # 100 is unchanged, and the domain is 0-200 (mod 200); the cycle completes at 300 (the original again) (GraphicsMagick 'modulate')
-    endpoints = ([100, 300] if (stepsize > 0) else [300, 100])
+    endpoints = (([100, 300] if (stepsize > 0) else [300, 100])
+    if not useHSB else ([0, 360] if (stepsize > 0) else [360, 0]))
     rotationSteps = FloatRange(*endpoints, stepsize, estPrecision)
     
     topPrecision = max([DecimalCount(num) for num in rotationSteps])
@@ -71,9 +73,9 @@ def HueRotations(stepsize:float) -> list[str]:
     return rotation_strs
 
 
-def EnumRotations(stepsize:float, length:int = 0) -> list[tuple[str,str]]:
+def EnumRotations(stepsize:float, length:int=0, useHSB=False) -> list[tuple[str,str]]:
     assert(length >= 0), "rotation length must be positive";
-    rotation_strs = HueRotations(stepsize)
+    rotation_strs = HueRotations(stepsize, useHSB)
     if (length != 0):
         extended_rotations = rotation_strs.copy()
         while(len(extended_rotations) < length): extended_rotations.extend(rotation_strs);
@@ -97,6 +99,7 @@ def SaveCommand(filename: str, command:str|list[str], append:bool=False) -> path
     len_str = f"{len(cmdlist)} command{('s' if(len(cmdlist) > 1) else '')}"
     if(cmdfile.exists() and not append): print(f"\n[WARNING] overwriting existing cmdfile!");
     print(f"{savs} {len_str} to {("new " if(not cmdfile.exists()) else '')}file: {cmdfile}")
+    # TODO: prevent saving 0 commands. 'preprocessing' is only used in IM pipeline?
     
     with cmdfile.open(mode=('a' if append else 'w'), encoding="utf-8") as newfile:
         newfile.write('\n'.join(cmdlist)); newfile.write('\n\n')
@@ -249,3 +252,82 @@ def argstr_GIF(delay:int) -> tuple[str,str]:
     argstrOne = f"{disposing} {delay_arg}".replace('  ','').strip() if isIM else None
     argstrTwo = f"{dithering} {morph_arg} {maybe_arg} {remap_arg}".replace('  ','').strip()
     return (argstrOne, argstrTwo)
+
+
+# potrace only accepts colors in an "#RRGGBB" format
+def HSB_rotation_map(HSB: list[int]):
+    """ performs a full HSB rotation and generates a script that translates to RGB hexcodes
+    :return: list of tuples (RGB, HSB), and RGB alone """
+    assert(len(HSB) == 3), "TODO: handle more inputs";
+    for I in range(1, len(HSB)): assert(HSB[I] <= 255), "HSB value ranges: 360 255 255";
+    assert (((initial_hue := HSB[0]) >= 0) and (initial_hue <= 360)), "invalid HSB (range [0-360])";
+    full_hue_rotation = [*map(lambda S: ((initial_hue+int(float(S))) % 360), HueRotations(1, True))]
+    def ZFILL(N: int): return str(N).zfill(3);
+    generation_command_list = [
+      "convert-im6.q16 -depth 8 -alpha off -print '#%[hex:hsb({},{},{})]\\n' null: null: 2>/dev/null".format(
+        ZFILL(H), ZFILL(HSB[1]), ZFILL(HSB[2])
+      ) for H in full_hue_rotation
+    ]
+    
+    color_gen_script = pathlib.Path("/tmp/RGB_TOPLEVEL/rotateHSB.sh");
+    with color_gen_script.open(mode='w', encoding="UTF-8") as newfile:
+        newfile.write('\n'.join(generation_command_list)); newfile.write('\n\n');
+    assert(color_gen_script.exists())
+    
+    # ./rotateHSB.sh >> RGB_hexcodes.txt
+    # basically executing the script now
+    import subprocess
+    RGB_hexcodes = []
+    with pathlib.Path("/tmp/RGB_TOPLEVEL/RGB_hexcodes.txt").open(mode='w', encoding="UTF-8") as output_path:
+      for command in generation_command_list: subprocess.run(command, check=True, stdout=output_path, stderr=None, encoding="utf-8", shell=True);
+    
+    output_path = pathlib.Path("/tmp/RGB_TOPLEVEL/RGB_hexcodes.txt");
+    with output_path.open(mode='r', encoding="UTF-8") as hexcodeFile:
+      for line in hexcodeFile: RGB_hexcodes.append(line.rstrip('\n'));
+    assert(len(RGB_hexcodes) == len(generation_command_list)); # 360
+    return zip(RGB_hexcodes, full_hue_rotation), RGB_hexcodes;
+
+
+def WriteInkscapeScript(svg_path: pathlib.Path, RGB_hexcodes: list[str],
+    script_path = pathlib.Path("/tmp/RGB_TOPLEVEL/inkscape_script.txt"),
+    render_path = pathlib.Path("/tmp/RGB_TOPLEVEL/svg_output/")):
+    if (not render_path.exists()): render_path.mkdir();
+    
+    def NewName(I: int, rgb: str):
+      return f"{str(I+1).zfill(3)}_{svg_path.stem}_{rgb.removeprefix('#')}.svg"
+      # color index ^ is written into the filenames to preserve their ordering
+    
+    action_list = []
+    export_tail = "export-plain-svg; export-do;"
+    for (I, rgb) in enumerate(RGB_hexcodes):
+      action = f"object-set-property:fill,{rgb}"
+      export = f"export-filename:{render_path}/{NewName(I,rgb)}"
+      action_list.append(f"{action}; {export}; {export_tail}\n")
+    
+    print(f"writing inkscape script: {script_path}");print('');
+    with script_path.open(mode='w',encoding="UTF-8") as script:
+      script.write(f"file-open:{svg_path.absolute()}; select-all;\n") # path cannot be quoted
+      script.writelines(action_list)
+      script.write("file-close")
+      script.write("\nquit\n") # 'quit' must be on a seperate line; cannot end with semicolon
+    script_cmd = f"inkscape --shell < {script_path}"
+    print(f"script has been written, execute with:\
+                \n{script_cmd} 1>/dev/null \n\n");
+    # this command ^ is redirecting stdout to suppress the annoying shell-startup message,
+    # but script errors will still be reported. to suppress all output, use: '&>/dev/null'
+    return (script_path, render_path, script_cmd)
+
+
+def RGBIFY_SVG(testimage:pathlib.Path, HSB=None):
+    if (HSB is None): HSB = [240, 213, 255]; # blue
+    assert(testimage.exists());
+    
+    (zipped, RGB_hexcodes) = HSB_rotation_map(HSB)
+    (script_path, render_path, script_cmd) = WriteInkscapeScript(testimage, RGB_hexcodes)
+    
+    import subprocess
+    print(f"executing: {script_path}")
+    subprocess.run(script_cmd, check=True, stdout=subprocess.DEVNULL, stderr=None, encoding="utf-8", shell=True);
+    # inkscape spams some annoying messages on stdout at startup. Errors will still be reported on stderr
+    print(f"SVG outputs have been written to: {render_path}")
+    return render_path
